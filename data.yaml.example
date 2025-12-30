@@ -1,0 +1,13 @@
+# Example YOLO-style data.yaml for TheGrid / HybridDetector
+# Update paths to match your Kaggle dataset layout.
+
+# Optional root (relative to this file). If omitted, relative paths resolve from this file's folder.
+path: .
+
+train: dataset/images/train
+val: dataset/images/val
+
+# Either provide names OR nc
+names:
+  - class0
+  - class1

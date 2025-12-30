@@ -2,7 +2,7 @@
 
 import torch
 import numpy as np
-from utils import metrics
+from hybriddetector.utils import metrics
 from pathlib import Path
 
 
@@ -89,13 +89,26 @@ def evaluate_model(model, dataloader, device, num_classes, save_dir='./results')
             # Get model predictions
             outputs = model(images)
             
+            # Decode predictions similarly to Predictor
+            boxes_cxcywh = torch.sigmoid(outputs['boxes'])  # [B,N,4]
+            obj = torch.sigmoid(outputs['objectness']).squeeze(-1)  # [B,N]
+            cls_prob = torch.softmax(outputs['class_probs'], dim=-1)  # [B,N,C]
+            cls_conf, cls_label = torch.max(cls_prob, dim=-1)  # [B,N]
+            conf = cls_conf * obj
+
+            xc, yc, w, h = boxes_cxcywh.unbind(dim=-1)
+            x1 = (xc - w / 2).clamp(0.0, 1.0)
+            y1 = (yc - h / 2).clamp(0.0, 1.0)
+            x2 = (xc + w / 2).clamp(0.0, 1.0)
+            y2 = (yc + h / 2).clamp(0.0, 1.0)
+            boxes_xyxy = torch.stack([x1, y1, x2, y2], dim=-1)
+
             # Process each image in the batch
             for img_idx in range(len(images)):
-                # Extract predictions
-                pred_boxes = outputs['boxes'][img_idx].cpu().numpy()
-                pred_scores = outputs['objectness'][img_idx].cpu().numpy()
-                pred_labels = outputs['class_probs'][img_idx].argmax(dim=-1).cpu().numpy()
-                
+                pred_boxes = boxes_xyxy[img_idx].cpu().numpy()
+                pred_scores = conf[img_idx].cpu().numpy()
+                pred_labels = cls_label[img_idx].cpu().numpy()
+
                 # Apply confidence threshold
                 conf_mask = pred_scores > 0.3
                 pred_boxes = pred_boxes[conf_mask]
@@ -108,9 +121,9 @@ def evaluate_model(model, dataloader, device, num_classes, save_dir='./results')
                     'labels': pred_labels
                 })
                 
-                # Extract ground truths
-                gt_boxes = targets['boxes'][img_idx].cpu().numpy()
-                gt_labels = targets['labels'][img_idx].cpu().numpy()
+                # Extract ground truths (targets is a list[dict])
+                gt_boxes = targets[img_idx]['boxes'].cpu().numpy()
+                gt_labels = targets[img_idx]['labels'].cpu().numpy()
                 
                 all_ground_truths.append({
                     'boxes': gt_boxes,

@@ -11,7 +11,18 @@ class Config:
     LR = 1e-3
     WEIGHT_DECAY = 1e-4
     USE_AMP = True  # Mixed precision training (faster on modern GPUs)
-    NUM_WORKERS = 4  # DataLoader workers
+    GRAD_ACCUM_STEPS = 1  # Increase if VRAM-limited (effective batch = BATCH_SIZE * GRAD_ACCUM_STEPS)
+
+    # DataLoader performance
+    NUM_WORKERS = 4
+    PIN_MEMORY = True
+    PERSISTENT_WORKERS = True
+    PREFETCH_FACTOR = 2
+
+    # Speed/compute knobs
+    FREEZE_CNN_EPOCHS = 10  # Freeze CNN backbone for first N epochs
+    TRANSFORMER_LOW_RES_ONLY = True  # Apply transformer only on low-res (40x40) feature map
+    TOKEN_POOL_FACTOR = 2  # AvgPool factor inside MHSA (reduces tokens by factor^2)
 
     # Model Architecture
     NUM_CLASSES = 20

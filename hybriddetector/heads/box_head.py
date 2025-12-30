@@ -10,6 +10,7 @@ class BoxHead(nn.Module):
     """
     def __init__(self, in_channels=256, num_anchors=3):
         super(BoxHead, self).__init__()
+        self.num_anchors = num_anchors
         self.conv = nn.Conv2d(in_channels, num_anchors * 4, kernel_size=1)
 
     def forward(self, x):

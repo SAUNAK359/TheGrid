@@ -1,0 +1,311 @@
+from __future__ import annotations
+
+import argparse
+import os
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import torch
+from torch import optim
+from PIL import Image
+import torchvision.transforms as TV
+
+from hybriddetector.main import HybridDetector
+from hybriddetector.dataset import custom_dataset, transforms as hd_transforms
+from hybriddetector.trainer import train as trainer_mod, scheduler as scheduler_mod
+from hybriddetector.inference.predictor import Predictor
+from hybriddetector.inference.visualize import save_detection_image
+from hybriddetector.utils import config, seed
+
+
+def _require_yaml():
+    try:
+        import yaml  # type: ignore
+    except Exception as e:  # pragma: no cover
+        raise RuntimeError(
+            "PyYAML is required for --data YAML parsing. Install with: pip install pyyaml"
+        ) from e
+    return yaml
+
+
+def load_data_yaml(data_yaml: str) -> Dict[str, Any]:
+    """Loads a YOLO-style data.yaml.
+
+    Supports keys: path, train, val, names/nc.
+    Returns resolved absolute paths for train/val.
+    """
+    yaml = _require_yaml()
+
+    yaml_path = Path(data_yaml)
+    if not yaml_path.exists():
+        raise FileNotFoundError(f"data.yaml not found: {yaml_path}")
+
+    with open(yaml_path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+
+    if not isinstance(data, dict):
+        raise ValueError(f"Invalid data.yaml (expected mapping): {yaml_path}")
+
+    base_dir = yaml_path.parent.resolve()
+    root = data.get("path")
+    if root is None:
+        root_dir = base_dir
+    else:
+        root_dir = Path(root)
+        if not root_dir.is_absolute():
+            root_dir = (base_dir / root_dir).resolve()
+
+    def _resolve(key: str) -> Optional[Path]:
+        v = data.get(key)
+        if v is None:
+            return None
+        p = Path(str(v))
+        if not p.is_absolute():
+            p = (root_dir / p).resolve()
+        return p
+
+    train_images = _resolve("train")
+    val_images = _resolve("val")
+
+    names = data.get("names")
+    if names is None:
+        nc = data.get("nc")
+        if isinstance(nc, int):
+            names = [f"class_{i}" for i in range(nc)]
+
+    if names is not None and not isinstance(names, list):
+        raise ValueError("data.yaml: 'names' must be a list")
+
+    return {
+        "root": root_dir,
+        "train_images": train_images,
+        "val_images": val_images,
+        "names": names,
+    }
+
+
+def infer_labels_dir(images_dir: Path) -> Path:
+    """Infer labels dir from images dir using YOLO convention.
+
+    Examples:
+      /.../images/train -> /.../labels/train
+      /.../images/val   -> /.../labels/val
+    """
+    images_dir = images_dir.resolve()
+    if images_dir.parent.name == "images":
+        return images_dir.parent.parent / "labels" / images_dir.name
+
+    # Fallback: try sibling 'labels/<split>' when images dir is '<split>'
+    return images_dir.parent / "labels" / images_dir.name
+
+
+def load_weights(model: torch.nn.Module, weights_path: str, device: str) -> None:
+    ckpt = torch.load(weights_path, map_location=device)
+    if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
+        state = ckpt["model_state_dict"]
+    else:
+        state = ckpt
+    model.load_state_dict(state, strict=False)
+
+
+def cmd_train(args: argparse.Namespace) -> None:
+    seed.set_seed(42)
+
+    device = args.device
+    if device == "cuda" and not torch.cuda.is_available():
+        device = "cpu"
+
+    data = load_data_yaml(args.data)
+    train_images: Path = data["train_images"]
+    if train_images is None:
+        raise ValueError("data.yaml must contain a 'train' path")
+    train_labels = infer_labels_dir(train_images)
+
+    val_images: Optional[Path] = data.get("val_images")
+    val_labels: Optional[Path] = infer_labels_dir(val_images) if val_images else None
+
+    class_names: Optional[List[str]] = data.get("names")
+    num_classes = len(class_names) if class_names else config.Config.NUM_CLASSES
+
+    train_tf = hd_transforms.get_transforms(train=True, img_size=args.img)
+    train_ds = custom_dataset.CustomDataset(csv_file=str(train_labels), img_dir=str(train_images), transform=train_tf)
+
+    val_ds = None
+    if val_images and val_labels and val_images.exists() and val_labels.exists():
+        val_tf = hd_transforms.get_transforms(train=False, img_size=args.img)
+        val_ds = custom_dataset.CustomDataset(csv_file=str(val_labels), img_dir=str(val_images), transform=val_tf)
+
+    model = HybridDetector()
+    # Keep config-driven architecture but set runtime class count for head
+    if hasattr(model, "cls_head") and getattr(model.cls_head, "num_classes", None) != num_classes:
+        from hybriddetector.heads.class_head import ClassHead
+
+        model.cls_head = ClassHead(num_classes=num_classes)
+    model.to(device)
+
+    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+
+    steps_per_epoch = max(1, len(train_ds) // args.batch)
+    lr_scheduler = scheduler_mod.get_scheduler(
+        optimizer,
+        max_lr=args.lr,
+        epochs=args.epochs,
+        steps_per_epoch=steps_per_epoch,
+    )
+
+    trainer = trainer_mod.Trainer(
+        model,
+        train_ds,
+        optimizer,
+        scheduler=lr_scheduler,
+        device=device,
+        batch_size=args.batch,
+        use_amp=bool(args.amp),
+        checkpoint_dir=args.project,
+        grad_accum_steps=args.accumulate,
+        num_workers=args.workers,
+        pin_memory=bool(args.pin_memory),
+        persistent_workers=bool(args.persistent_workers),
+        prefetch_factor=args.prefetch_factor,
+        freeze_cnn_epochs=args.freeze_cnn_epochs,
+    )
+
+    start_epoch = 0
+    if args.resume:
+        ckpt = trainer.load_checkpoint(args.resume)
+        start_epoch = int(ckpt.get("epoch", 0))
+
+    print(f"\nTrain images: {train_images}")
+    print(f"Train labels: {train_labels}")
+    if val_ds is None:
+        print("Val: (skipped) - provide val in data.yaml and labels/val")
+    else:
+        print(f"Val images: {val_images}")
+        print(f"Val labels: {val_labels}")
+
+    for epoch in range(start_epoch, args.epochs):
+        trainer.current_epoch = epoch
+        loss = trainer.train_epoch()
+        print(
+            f"epoch {epoch+1}/{args.epochs} | loss={loss['total']:.4f} "
+            f"(bbox={loss['bbox']:.4f}, cls={loss['cls']:.4f}, obj={loss['obj']:.4f})"
+        )
+
+        if (epoch + 1) % args.save_period == 0 or (epoch + 1) == args.epochs:
+            is_best = loss["total"] < trainer.best_loss
+            if is_best:
+                trainer.best_loss = loss["total"]
+            trainer.save_checkpoint(epoch + 1, is_best=is_best)
+
+    print(f"\nDone. Checkpoints in: {Path(args.project).resolve()}")
+
+
+def _iter_images(source: Path) -> List[Path]:
+    if source.is_file():
+        return [source]
+
+    exts = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+    return [p for p in sorted(source.rglob("*")) if p.is_file() and p.suffix.lower() in exts]
+
+
+def cmd_predict(args: argparse.Namespace) -> None:
+    seed.set_seed(42)
+
+    device = args.device
+    if device == "cuda" and not torch.cuda.is_available():
+        device = "cpu"
+
+    class_names = None
+    if args.data:
+        data = load_data_yaml(args.data)
+        class_names = data.get("names")
+
+    model = HybridDetector().to(device)
+    load_weights(model, args.weights, device)
+
+    pred = Predictor(model, conf_thresh=args.conf, iou_thresh=args.iou, device=device)
+
+    source = Path(args.source)
+    if not source.exists():
+        raise FileNotFoundError(f"--source not found: {source}")
+
+    save_dir = Path(args.save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    tf = TV.Compose([
+        TV.Resize((args.img, args.img)),
+        TV.ToTensor(),
+    ])
+
+    images = _iter_images(source)
+    if not images:
+        raise RuntimeError(f"No images found in: {source}")
+
+    for img_path in images:
+        img = Image.open(img_path).convert("RGB")
+        t = tf(img)
+        if not isinstance(t, torch.Tensor):
+            raise TypeError("Expected torchvision transform to return a torch.Tensor")
+
+        boxes, scores, labels = pred.predict_single_image(t)
+
+        out_path = save_dir / f"{img_path.stem}_pred.jpg"
+        save_detection_image(t, boxes, labels, scores, class_names=class_names, save_path=str(out_path))
+
+    print(f"Saved predictions to: {save_dir.resolve()}")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="hybriddetector", description="YOLO-like CLI for TheGrid")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    t = sub.add_parser("train", help="Train using a YOLO data.yaml")
+    t.add_argument("--data", type=str, required=True, help="Path to YOLO data.yaml")
+    t.add_argument("--epochs", type=int, default=config.Config.EPOCHS)
+    t.add_argument("--batch", type=int, default=config.Config.BATCH_SIZE)
+    t.add_argument("--img", type=int, default=config.Config.IMG_SIZE)
+    t.add_argument("--device", type=str, default=config.Config.DEVICE)
+    t.add_argument("--lr", type=float, default=config.Config.LR)
+    t.add_argument("--weight-decay", type=float, default=config.Config.WEIGHT_DECAY)
+    t.add_argument("--amp", action="store_true", default=bool(config.Config.USE_AMP))
+    t.add_argument("--accumulate", type=int, default=int(getattr(config.Config, "GRAD_ACCUM_STEPS", 1)))
+    t.add_argument("--workers", type=int, default=int(getattr(config.Config, "NUM_WORKERS", 4)))
+    t.add_argument("--pin-memory", action="store_true", default=bool(getattr(config.Config, "PIN_MEMORY", True)))
+    t.add_argument(
+        "--persistent-workers",
+        action="store_true",
+        default=bool(getattr(config.Config, "PERSISTENT_WORKERS", True)),
+    )
+    t.add_argument("--prefetch-factor", type=int, default=int(getattr(config.Config, "PREFETCH_FACTOR", 2)))
+    t.add_argument("--freeze-cnn-epochs", type=int, default=int(getattr(config.Config, "FREEZE_CNN_EPOCHS", 0)))
+    t.add_argument("--project", type=str, default=str(config.Config.SAVE_DIR))
+    t.add_argument("--save-period", type=int, default=int(getattr(config.Config, "SAVE_EVERY_N_EPOCHS", 5)))
+    t.add_argument("--resume", type=str, default="", help="Path to checkpoint .pth to resume")
+    t.set_defaults(func=cmd_train)
+
+    pr = sub.add_parser("predict", help="Run inference on an image or folder")
+    pr.add_argument("--weights", type=str, required=True, help="Path to checkpoint (.pth)")
+    pr.add_argument("--source", type=str, required=True, help="Image file or folder")
+    pr.add_argument("--data", type=str, default="", help="Optional data.yaml (for class names)")
+    pr.add_argument("--img", type=int, default=config.Config.IMG_SIZE)
+    pr.add_argument("--device", type=str, default=config.Config.DEVICE)
+    pr.add_argument("--conf", type=float, default=float(config.Config.CONF_THRESH))
+    pr.add_argument("--iou", type=float, default=float(config.Config.IOU_THRESH))
+    pr.add_argument("--save-dir", type=str, default=str(config.Config.VIS_DIR))
+    pr.set_defaults(func=cmd_predict)
+
+    return p
+
+
+def main(argv: Optional[List[str]] = None) -> None:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    if args.cmd == "train" and args.resume == "":
+        args.resume = ""
+
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

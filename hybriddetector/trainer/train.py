@@ -14,13 +14,33 @@ class Trainer:
     Enhanced Trainer for Hybrid Detector with checkpointing, mixed precision, and logging.
     """
     def __init__(self, model, train_dataset, optimizer, scheduler=None, device='cuda', 
-                 batch_size=4, use_amp=True, checkpoint_dir='./checkpoints'):
+                 batch_size=4, use_amp=True, checkpoint_dir='./checkpoints',
+                 grad_accum_steps: int = 1,
+                 num_workers: int = 4,
+                 pin_memory: bool = True,
+                 persistent_workers: bool = True,
+                 prefetch_factor: int = 2,
+                 freeze_cnn_epochs: int = 0):
         self.model = model.to(device)
         self.device = device
         self.optimizer = optimizer
         self.scheduler = scheduler
-        self.train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, 
-                                       collate_fn=self.collate_fn, num_workers=4, pin_memory=True)
+
+        self.grad_accum_steps = max(1, int(grad_accum_steps))
+        self.freeze_cnn_epochs = max(0, int(freeze_cnn_epochs))
+
+        # DataLoader performance tuning
+        dl_kwargs = {
+            "batch_size": batch_size,
+            "shuffle": True,
+            "collate_fn": self.collate_fn,
+            "num_workers": int(num_workers),
+            "pin_memory": bool(pin_memory),
+        }
+        if dl_kwargs["num_workers"] > 0:
+            dl_kwargs["persistent_workers"] = bool(persistent_workers)
+            dl_kwargs["prefetch_factor"] = int(prefetch_factor)
+        self.train_loader = DataLoader(train_dataset, **dl_kwargs)
         
         # Loss functions
         self.bbox_loss_fn = bbox_loss.giou_loss
@@ -55,6 +75,13 @@ class Trainer:
     def train_epoch(self):
         """Train for one epoch with loss tracking."""
         self.model.train()
+
+        # Optionally freeze/unfreeze CNN backbone early
+        if hasattr(self.model, "cnn") and self.freeze_cnn_epochs > 0:
+            should_freeze = self.current_epoch < self.freeze_cnn_epochs
+            for p in self.model.cnn.parameters():
+                p.requires_grad = not should_freeze
+
         total_loss = 0
         bbox_loss_total = 0
         cls_loss_total = 0
@@ -62,70 +89,86 @@ class Trainer:
         
         loop = tqdm(self.train_loader, desc=f"Epoch {self.current_epoch + 1}")
         
+        self.optimizer.zero_grad(set_to_none=True)
+
         for batch_idx, (images, targets) in enumerate(loop):
             images = images.to(self.device)
             
             # Forward pass with mixed precision
             if self.use_amp:
+                assert self.scaler is not None
                 with autocast():
                     outputs = self.model(images)
-                    
-                    # Extract predictions
+
                     pred_boxes = outputs['boxes']
                     pred_obj = outputs['objectness']
                     pred_cls = outputs['class_probs']
-                    
-                    # Extract targets
-                    target_boxes = torch.stack([t['boxes'] for t in targets]).to(self.device)
-                    target_labels = torch.stack([t['labels'] for t in targets]).to(self.device)
-                    target_obj = (target_boxes.sum(-1) > 0).float().unsqueeze(-1)
-                    
-                    # Compute losses
-                    loss_bbox = self.bbox_loss_fn(pred_boxes, target_boxes)
-                    loss_cls = self.cls_loss_fn(pred_cls, target_labels)
+
+                    target_boxes, target_labels, target_obj = self._encode_dense_targets(pred_boxes, targets)
+
+                    # Objectness on all anchors
                     loss_obj = self.obj_loss_fn(pred_obj, target_obj)
-                    
-                    loss = loss_bbox + loss_cls + loss_obj
-                
-                # Backward with gradient scaling
-                self.optimizer.zero_grad()
+
+                    # Class only on positive anchors (background uses ignore_index=-1)
+                    loss_cls = self.cls_loss_fn(pred_cls, target_labels)
+
+                    # BBox only on positive anchors
+                    pos_mask = target_obj.squeeze(-1) > 0.5
+                    if pos_mask.any():
+                        loss_bbox = self.bbox_loss_fn(pred_boxes[pos_mask], target_boxes[pos_mask])
+                    else:
+                        loss_bbox = pred_boxes.sum() * 0.0
+
+                    loss = (loss_bbox + loss_cls + loss_obj) / self.grad_accum_steps
+
                 self.scaler.scale(loss).backward()
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
             else:
-                # Standard training without AMP
                 outputs = self.model(images)
-                
+
                 pred_boxes = outputs['boxes']
                 pred_obj = outputs['objectness']
                 pred_cls = outputs['class_probs']
-                
-                target_boxes = torch.stack([t['boxes'] for t in targets]).to(self.device)
-                target_labels = torch.stack([t['labels'] for t in targets]).to(self.device)
-                target_obj = (target_boxes.sum(-1) > 0).float().unsqueeze(-1)
-                
-                loss_bbox = self.bbox_loss_fn(pred_boxes, target_boxes)
-                loss_cls = self.cls_loss_fn(pred_cls, target_labels)
+
+                target_boxes, target_labels, target_obj = self._encode_dense_targets(pred_boxes, targets)
+
                 loss_obj = self.obj_loss_fn(pred_obj, target_obj)
-                
-                loss = loss_bbox + loss_cls + loss_obj
-                
-                self.optimizer.zero_grad()
+                loss_cls = self.cls_loss_fn(pred_cls, target_labels)
+
+                pos_mask = target_obj.squeeze(-1) > 0.5
+                if pos_mask.any():
+                    loss_bbox = self.bbox_loss_fn(pred_boxes[pos_mask], target_boxes[pos_mask])
+                else:
+                    loss_bbox = pred_boxes.sum() * 0.0
+
+                loss = (loss_bbox + loss_cls + loss_obj) / self.grad_accum_steps
+
                 loss.backward()
-                self.optimizer.step()
-            
-            if self.scheduler:
-                self.scheduler.step()
+
+            # Optimizer step on accumulation boundary
+            is_step = ((batch_idx + 1) % self.grad_accum_steps == 0) or ((batch_idx + 1) == len(self.train_loader))
+            if is_step:
+                if self.use_amp:
+                    assert self.scaler is not None
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                else:
+                    self.optimizer.step()
+
+                self.optimizer.zero_grad(set_to_none=True)
+
+                if self.scheduler:
+                    self.scheduler.step()
             
             # Track losses
-            total_loss += loss.item()
+            # Track *unscaled* losses for reporting
+            total_loss += (loss_bbox + loss_cls + loss_obj).item()
             bbox_loss_total += loss_bbox.item()
             cls_loss_total += loss_cls.item()
             obj_loss_total += loss_obj.item()
             
             # Update progress bar
             loop.set_postfix({
-                'loss': f'{loss.item():.4f}',
+                'loss': f'{(loss_bbox + loss_cls + loss_obj).item():.4f}',
                 'bbox': f'{loss_bbox.item():.4f}',
                 'cls': f'{loss_cls.item():.4f}',
                 'obj': f'{loss_obj.item():.4f}'
@@ -151,6 +194,74 @@ class Trainer:
             'cls': avg_cls_loss,
             'obj': avg_obj_loss
         }
+
+    def _encode_dense_targets(self, pred_boxes: torch.Tensor, targets: list[dict]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Encode YOLO-format GT boxes into dense anchor targets aligned with model outputs.
+
+        pred_boxes: [B, N, 4] where N=H*W*A and boxes are predicted in (xc,yc,w,h) normalized space.
+        targets: list of dicts with keys 'boxes' [Gi,4] normalized and 'labels' [Gi]
+
+        Returns:
+          target_boxes: [B, N, 4]
+          target_labels: [B, N] with -1 for background
+          target_obj: [B, N, 1] float 0/1
+        """
+        B, N, _ = pred_boxes.shape
+        device = pred_boxes.device
+
+        # Infer number of anchors from model if available; otherwise default to 3.
+        num_anchors = 3
+        if hasattr(self.model, "box_head") and hasattr(self.model.box_head, "num_anchors"):
+            num_anchors = int(self.model.box_head.num_anchors)
+
+        if N % num_anchors != 0:
+            raise ValueError(f"Pred count N={N} not divisible by num_anchors={num_anchors}")
+
+        grid_cells = N // num_anchors
+        grid_size = int(grid_cells ** 0.5)
+        if grid_size * grid_size != grid_cells:
+            raise ValueError(f"Expected square grid; got grid_cells={grid_cells} from N={N} and A={num_anchors}")
+
+        H = W = grid_size
+
+        target_boxes = torch.zeros((B, N, 4), dtype=torch.float32, device=device)
+        target_labels = torch.full((B, N), -1, dtype=torch.long, device=device)
+        target_obj = torch.zeros((B, N, 1), dtype=torch.float32, device=device)
+
+        for bi in range(B):
+            gt_boxes = targets[bi]["boxes"]
+            gt_labels = targets[bi]["labels"]
+            if isinstance(gt_boxes, torch.Tensor):
+                gt_boxes_t = gt_boxes.to(device=device, dtype=torch.float32)
+            else:
+                gt_boxes_t = torch.tensor(gt_boxes, device=device, dtype=torch.float32)
+            if isinstance(gt_labels, torch.Tensor):
+                gt_labels_t = gt_labels.to(device=device, dtype=torch.long)
+            else:
+                gt_labels_t = torch.tensor(gt_labels, device=device, dtype=torch.long)
+
+            if gt_boxes_t.numel() == 0:
+                continue
+
+            # Assign each GT to a single anchor at its center cell (simple YOLO-style assignment)
+            for (xc, yc, bw, bh), cls in zip(gt_boxes_t, gt_labels_t):
+                # clamp to [0,1]
+                xc = xc.clamp(0.0, 1.0)
+                yc = yc.clamp(0.0, 1.0)
+                bw = bw.clamp(0.0, 1.0)
+                bh = bh.clamp(0.0, 1.0)
+
+                gi = int((xc * W).clamp(0, W - 1).item())
+                gj = int((yc * H).clamp(0, H - 1).item())
+
+                a = 0  # simplest: use first anchor
+                idx = (gj * W + gi) * num_anchors + a
+
+                target_boxes[bi, idx] = torch.stack([xc, yc, bw, bh])
+                target_labels[bi, idx] = cls
+                target_obj[bi, idx, 0] = 1.0
+
+        return target_boxes, target_labels, target_obj
     
     def save_checkpoint(self, epoch, is_best=False, additional_info=None):
         """

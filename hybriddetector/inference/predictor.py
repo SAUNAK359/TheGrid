@@ -37,15 +37,25 @@ class Predictor:
         outputs = self.model(images)
 
         # outputs: dict with keys ['boxes', 'objectness', 'class_probs']
-        boxes = outputs['boxes']       # [B, N, 4]
-        obj = outputs['objectness']    # [B, N, 1]
-        cls = outputs['class_probs']   # [B, N, num_classes]
+        # boxes are (xc,yc,w,h) in normalized space (post-sigmoid)
+        boxes_cxcywh = torch.sigmoid(outputs['boxes'])       # [B, N, 4]
+        obj = torch.sigmoid(outputs['objectness']).squeeze(-1)  # [B, N]
+        cls_prob = torch.softmax(outputs['class_probs'], dim=-1)  # [B, N, C]
 
-        conf_scores, labels = torch.max(cls * obj, dim=-1)  # [B, N]
+        cls_conf, labels = torch.max(cls_prob, dim=-1)  # [B, N]
+        conf_scores = cls_conf * obj
+
+        # Convert to xyxy for NMS
+        xc, yc, w, h = boxes_cxcywh.unbind(dim=-1)
+        x1 = (xc - w / 2).clamp(0.0, 1.0)
+        y1 = (yc - h / 2).clamp(0.0, 1.0)
+        x2 = (xc + w / 2).clamp(0.0, 1.0)
+        y2 = (yc + h / 2).clamp(0.0, 1.0)
+        boxes_xyxy = torch.stack([x1, y1, x2, y2], dim=-1)
 
         # Filter low-confidence boxes
         mask = conf_scores > self.conf_thresh
-        filtered_boxes = [b[m] for b, m in zip(boxes, mask)]
+        filtered_boxes = [b[m] for b, m in zip(boxes_xyxy, mask)]
         filtered_scores = [s[m] for s, m in zip(conf_scores, mask)]
         filtered_labels = [l[m] for l, m in zip(labels, mask)]
 

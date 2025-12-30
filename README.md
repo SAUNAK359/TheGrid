@@ -187,9 +187,36 @@ cd TheGrid
 
 # Install required dependencies
 pip install torch torchvision pillow numpy matplotlib seaborn scikit-learn opencv-python tqdm
+
+# For augmentations (required)
+pip install albumentations
 ```
 
 ## 🚀 Quick Start
+
+### Kaggle / YOLO-Style (Clone → Train → Predict)
+
+This repo is structured so you can **clone into Kaggle** and run commands similar to YOLO.
+
+- Install deps: `pip install -r requirements.txt`
+- Create your `data.yaml` (start from `data.yaml.example`) and point it to your dataset.
+- Use the module CLI:
+
+Train:
+
+`python -m hybriddetector train --data /kaggle/working/data.yaml --epochs 50 --batch 8 --img 640 --device cuda`
+
+Resume:
+
+`python -m hybriddetector train --data /kaggle/working/data.yaml --resume checkpoints/latest_checkpoint.pth`
+
+Predict (testing):
+
+`python -m hybriddetector predict --weights checkpoints/best_model.pth --source /kaggle/input/yourdataset/images/val --data /kaggle/working/data.yaml --save-dir results/visualizations`
+
+Dataset layout must follow YOLO convention:
+
+`images/train`, `images/val`, `labels/train`, `labels/val` with per-image `.txt` labels.
 
 ```bash
 # 1. Prepare your YOLO format dataset (see Dataset Preparation section)
@@ -230,6 +257,19 @@ python hybriddetector/main.py
 - **Checkpointing**: Auto-save checkpoints every N epochs with best model tracking
 - **Resume Training**: Continue training from saved checkpoints
 - **Loss Tracking**: Track total, bbox, classification, and objectness losses separately
+
+### 🚄 Training Speed Optimizations (Biggest Wins First)
+
+| Upgrade | Expected Speed Gain | Risk |
+|---|---:|---|
+| Mixed Precision (AMP) | 1.6–2.0× | None |
+| Freeze CNN early | 1.3–1.5× | Low |
+| Transformer only at low-res (40×40) | ~1.4× | Very low |
+| Gradient accumulation tuning | ~1.2× (effective) | None |
+| Smarter data loading | 1.1–1.3× | None |
+| Token pooling inside MHSA | 2–4× (transformer part) | Medium |
+
+These are implemented as simple toggles in the config (no code changes needed).
 
 ### 📊 Evaluation & Metrics
 - **mAP Calculation**: Mean Average Precision at IoU=0.5
@@ -634,6 +674,18 @@ All settings are in `hybriddetector/utils/config.py`:
 BATCH_SIZE = 8          # Reduce if OOM
 USE_AMP = True          # Mixed precision (faster)
 EPOCHS = 50             # Training duration
+
+# Speed knobs
+FREEZE_CNN_EPOCHS = 10          # Freeze CNN for early epochs
+TRANSFORMER_LOW_RES_ONLY = True # Transformer only on 40x40 map
+TOKEN_POOL_FACTOR = 2           # AvgPool factor inside attention
+GRAD_ACCUM_STEPS = 1            # Increase to simulate bigger batches
+
+# DataLoader performance
+NUM_WORKERS = 4
+PIN_MEMORY = True
+PERSISTENT_WORKERS = True
+PREFETCH_FACTOR = 2
 
 # Checkpointing
 SAVE_EVERY_N_EPOCHS = 5         # Checkpoint frequency

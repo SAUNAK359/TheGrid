@@ -9,7 +9,8 @@ class FocalLoss(nn.Module):
         self.alpha = alpha
         self.gamma = gamma
         self.reduction = reduction
-        self.ce = nn.CrossEntropyLoss(reduction='none')
+        # Use -1 as background/ignore label for dense anchor targets.
+        self.ce = nn.CrossEntropyLoss(reduction='none', ignore_index=-1)
 
     def forward(self, logits, targets):
         """
