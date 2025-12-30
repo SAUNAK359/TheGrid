@@ -171,3 +171,77 @@ class Predictor:
         boxes, scores, labels = self.predict(image_tensor)
         
         return boxes[0], scores[0], labels[0]
+
+    @torch.no_grad()
+    def predict_single_image_verified(
+        self,
+        image_tensor: torch.Tensor,
+        verify_iou: float = 0.5,
+    ):
+        """Predict on a single image and verify detections via flip test-time augmentation.
+
+        The "verification" here is a lightweight consistency check:
+        - Run inference on the original image
+        - Run inference on a horizontally flipped image
+        - Flip the boxes back
+        - Mark a detection as verified if it has a same-class match with IoU >= verify_iou
+
+        Returns:
+            boxes, scores, labels, verified_mask, verify_iou_scores
+        """
+        if image_tensor.dim() == 3:
+            image_tensor = image_tensor.unsqueeze(0)
+
+        # Original predictions
+        boxes_o, scores_o, labels_o = self.predict(image_tensor)
+        boxes_o, scores_o, labels_o = boxes_o[0], scores_o[0], labels_o[0]
+
+        # Flipped predictions
+        flipped = torch.flip(image_tensor, dims=[3])
+        boxes_f, scores_f, labels_f = self.predict(flipped)
+        boxes_f, scores_f, labels_f = boxes_f[0], scores_f[0], labels_f[0]
+
+        # Flip boxes back (xyxy in normalized coords)
+        if boxes_f.numel() > 0:
+            x1 = boxes_f[:, 0]
+            y1 = boxes_f[:, 1]
+            x2 = boxes_f[:, 2]
+            y2 = boxes_f[:, 3]
+            boxes_f = torch.stack([1.0 - x2, y1, 1.0 - x1, y2], dim=-1)
+
+        verified = torch.zeros((boxes_o.shape[0],), dtype=torch.bool, device=boxes_o.device)
+        best_iou = torch.zeros((boxes_o.shape[0],), dtype=torch.float32, device=boxes_o.device)
+
+        if boxes_o.numel() == 0 or boxes_f.numel() == 0:
+            return boxes_o, scores_o, labels_o, verified, best_iou
+
+        def _iou_xyxy(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+            # a: [4], b: [M,4]
+            ax1, ay1, ax2, ay2 = a
+            bx1, by1, bx2, by2 = b[:, 0], b[:, 1], b[:, 2], b[:, 3]
+
+            ix1 = torch.maximum(ax1, bx1)
+            iy1 = torch.maximum(ay1, by1)
+            ix2 = torch.minimum(ax2, bx2)
+            iy2 = torch.minimum(ay2, by2)
+
+            iw = (ix2 - ix1).clamp(min=0.0)
+            ih = (iy2 - iy1).clamp(min=0.0)
+            inter = iw * ih
+
+            area_a = ((ax2 - ax1).clamp(min=0.0)) * ((ay2 - ay1).clamp(min=0.0))
+            area_b = ((bx2 - bx1).clamp(min=0.0)) * ((by2 - by1).clamp(min=0.0))
+            union = area_a + area_b - inter
+            return inter / (union + 1e-6)
+
+        # For each original detection, find best IoU among same-class flipped detections.
+        for i in range(boxes_o.shape[0]):
+            same_class = labels_f == labels_o[i]
+            if not torch.any(same_class):
+                continue
+            ious = _iou_xyxy(boxes_o[i], boxes_f[same_class])
+            m = torch.max(ious)
+            best_iou[i] = m
+            verified[i] = m >= float(verify_iou)
+
+        return boxes_o, scores_o, labels_o, verified, best_iou

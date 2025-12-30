@@ -223,6 +223,16 @@ Notes:
 - Visualizations are saved as normal (non-black) RGB images with boxes drawn.
 - If you see no boxes, try lowering the threshold: `--conf 0.01`
 
+Optional verification (consistency check):
+
+`python -m hybriddetector predict --weights checkpoints/best_model.pth --source dataset/images/val --verify --verify-iou 0.5 --save-dir results/visualizations`
+
+This writes `verification.csv` in `--save-dir`. A detection is marked `verified=True` if it is stable under a horizontal flip test-time augmentation (same class, IoU >= `--verify-iou`).
+
+Class names:
+- If you pass `--data path/to/data.yaml`, class names come from `names:` in that YAML.
+- Otherwise the CLI falls back to `Config.CLASS_NAMES` (and pads with `class_N` if needed).
+
 Dataset layout must follow YOLO convention:
 
 `images/train`, `images/val`, `labels/train`, `labels/val` with per-image `.txt` labels.

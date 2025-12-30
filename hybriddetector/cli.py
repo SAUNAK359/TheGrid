@@ -339,6 +339,7 @@ def cmd_predict(args: argparse.Namespace) -> None:
     if device == "cuda" and not torch.cuda.is_available():
         device = "cpu"
 
+    # Prefer class names from data.yaml; otherwise fall back to config.
     class_names = None
     if args.data:
         data = load_data_yaml(args.data)
@@ -346,6 +347,19 @@ def cmd_predict(args: argparse.Namespace) -> None:
 
     model = HybridDetector().to(device)
     load_weights(model, args.weights, device)
+
+    # Ensure we always have readable class names.
+    num_classes = getattr(getattr(model, "cls_head", None), "num_classes", None)
+    if not class_names:
+        cfg_names = list(getattr(config.Config, "CLASS_NAMES", []) or [])
+        if isinstance(num_classes, int) and num_classes > 0:
+            class_names = [cfg_names[i] if i < len(cfg_names) else f"class_{i}" for i in range(num_classes)]
+        else:
+            class_names = cfg_names if cfg_names else None
+    else:
+        if isinstance(num_classes, int) and num_classes > 0 and len(class_names) != num_classes:
+            # Pad/truncate to match checkpoint class count.
+            class_names = [class_names[i] if i < len(class_names) else f"class_{i}" for i in range(num_classes)]
 
     pred = Predictor(model, conf_thresh=args.conf, iou_thresh=args.iou, device=device)
 
@@ -366,6 +380,8 @@ def cmd_predict(args: argparse.Namespace) -> None:
     if not images:
         raise RuntimeError(f"No images found in: {source}")
 
+    verify_rows = []
+
     for img_path in images:
         img = Image.open(img_path).convert("RGB")
         img = tf_resize(img)
@@ -375,10 +391,52 @@ def cmd_predict(args: argparse.Namespace) -> None:
         if not isinstance(t, torch.Tensor) or not isinstance(t_raw, torch.Tensor):
             raise TypeError("Expected torchvision transform to return a torch.Tensor")
 
-        boxes, scores, labels = pred.predict_single_image(t)
+        if args.verify:
+            boxes, scores, labels, verified, verify_iou = pred.predict_single_image_verified(
+                t, verify_iou=args.verify_iou
+            )
+
+            # Save a simple per-detection verification report
+            for b, s, lab, ok, iou in zip(
+                boxes.cpu().tolist(),
+                scores.cpu().tolist(),
+                labels.cpu().tolist(),
+                verified.cpu().tolist(),
+                verify_iou.cpu().tolist(),
+            ):
+                name = class_names[int(lab)] if class_names and int(lab) < len(class_names) else f"class_{int(lab)}"
+                verify_rows.append([
+                    str(img_path.name),
+                    int(lab),
+                    name,
+                    float(s),
+                    float(iou),
+                    bool(ok),
+                    float(b[0]), float(b[1]), float(b[2]), float(b[3]),
+                ])
+        else:
+            boxes, scores, labels = pred.predict_single_image(t)
 
         out_path = save_dir / f"{img_path.stem}_pred.jpg"
         save_detection_image(t_raw, boxes, labels, scores, class_names=class_names, save_path=str(out_path))
+
+    if args.verify and verify_rows:
+        import csv
+
+        report_path = save_dir / "verification.csv"
+        with open(report_path, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow([
+                "image",
+                "class_id",
+                "class_name",
+                "score",
+                "verify_iou",
+                "verified",
+                "x1", "y1", "x2", "y2",
+            ])
+            w.writerows(verify_rows)
+        print(f"Saved verification report to: {report_path.resolve()}")
 
     print(f"Saved predictions to: {save_dir.resolve()}")
 
@@ -443,6 +501,17 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--conf", type=float, default=float(config.Config.CONF_THRESH))
     pr.add_argument("--iou", type=float, default=float(config.Config.IOU_THRESH))
     pr.add_argument("--save-dir", type=str, default=str(config.Config.VIS_DIR))
+    pr.add_argument(
+        "--verify",
+        action="store_true",
+        help="Run a flip-consistency verification pass and write verification.csv to --save-dir.",
+    )
+    pr.add_argument(
+        "--verify-iou",
+        type=float,
+        default=0.5,
+        help="IoU threshold for verification match (only used with --verify).",
+    )
     pr.set_defaults(func=cmd_predict)
 
     return p
