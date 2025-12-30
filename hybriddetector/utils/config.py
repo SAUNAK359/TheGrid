@@ -4,19 +4,21 @@ class Config:
     # Device
     DEVICE = 'cuda'  # or 'cpu'
 
-    # Training
+    # Training Hyperparameters
     BATCH_SIZE = 8
     IMG_SIZE = 640
     EPOCHS = 50
     LR = 1e-3
     WEIGHT_DECAY = 1e-4
+    USE_AMP = True  # Mixed precision training (faster on modern GPUs)
+    NUM_WORKERS = 4  # DataLoader workers
 
-    # Model
+    # Model Architecture
     NUM_CLASSES = 20
     BACKBONE_CHANNELS = [64, 256, 512]
     TRANSFORMER_HEADS = 8
 
-    # Loss thresholds
+    # Detection Thresholds
     CONF_THRESH = 0.3
     IOU_THRESH = 0.5
 
@@ -26,4 +28,33 @@ class Config:
     LABELS_DIR = './dataset/labels/train'
     VAL_LABELS_DIR = './dataset/labels/val'
     DATA_YAML = './dataset/data.yaml'
+    
+    # Output Paths
     SAVE_DIR = './checkpoints'
+    RESULTS_DIR = './results'
+    PLOTS_DIR = './results/plots'
+    VIS_DIR = './results/visualizations'
+    
+    # Checkpointing
+    SAVE_EVERY_N_EPOCHS = 5  # Save checkpoint every N epochs
+    SAVE_BEST = True  # Save best model based on loss
+    RESUME_TRAINING = False  # Resume from checkpoint
+    RESUME_CHECKPOINT = './checkpoints/latest_checkpoint.pth'
+    
+    # Evaluation
+    EVAL_EVERY_N_EPOCHS = 5  # Run evaluation every N epochs
+    SAVE_EVAL_PLOTS = True  # Save mAP, PR curves, confusion matrix
+    
+    # Inference
+    SAVE_PREDICTIONS_JSON = True
+    SAVE_PREDICTIONS_CSV = True
+    SAVE_VISUALIZATIONS = True
+    MAX_VIS_IMAGES = 50  # Maximum number of images to visualize
+    
+    # Class Names (COCO subset example - update for your dataset)
+    CLASS_NAMES = [
+        'person', 'bicycle', 'car', 'motorcycle', 'airplane',
+        'bus', 'train', 'truck', 'boat', 'traffic light',
+        'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird',
+        'cat', 'dog', 'horse', 'sheep', 'cow'
+    ]

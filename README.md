@@ -117,14 +117,63 @@ hybriddetector/
 
 ```bash
 # Install required dependencies
-pip install torch torchvision pillow numpy
+pip install torch torchvision pillow numpy matplotlib seaborn scikit-learn opencv-python tqdm
 ```
 
 ## 💻 Usage
 
 ```bash
-# Quick start - train the model
+# Quick start - train the model with all features
 python hybriddetector/main.py
+
+# The training will:
+# ✅ Train with mixed precision (AMP) for faster training
+# ✅ Save checkpoints every 5 epochs
+# ✅ Run evaluation with mAP, PR curves, and confusion matrix
+# ✅ Generate and save loss curves
+# ✅ Save visualizations of predictions
+# ✅ Export results as JSON and CSV
+```
+
+## ⚡ New Features
+
+### 🎯 Training Enhancements
+- **Mixed Precision Training**: Automatic Mixed Precision (AMP) for faster training on modern GPUs
+- **Checkpointing**: Auto-save checkpoints every N epochs with best model tracking
+- **Resume Training**: Continue training from saved checkpoints
+- **Loss Tracking**: Track total, bbox, classification, and objectness losses separately
+
+### 📊 Evaluation & Metrics
+- **mAP Calculation**: Mean Average Precision at IoU=0.5
+- **Per-Class AP**: Individual Average Precision for each class
+- **Precision-Recall Curves**: Visualized PR curves for all classes
+- **Confusion Matrix**: Heatmap showing classification performance
+- **Loss Curves**: Training loss visualization over epochs
+
+### 🔍 Inference Capabilities
+- **Batch Inference**: Process entire datasets efficiently
+- **Multiple Export Formats**: JSON and CSV result files
+- **Visualization**: Auto-generated detection images with bounding boxes
+- **YOLO-style Outputs**: Industry-standard result format
+
+### 📁 Output Structure
+```
+results/
+├── checkpoints/           # Model checkpoints
+│   ├── best_model.pth
+│   ├── latest_checkpoint.pth
+│   ├── checkpoint_epoch_5.pth
+│   └── loss_history.json
+├── plots/                 # Training and evaluation plots
+│   ├── loss_curves.png
+│   ├── pr_curves.png
+│   └── confusion_matrix.png
+├── visualizations/        # Detection result images
+│   ├── demo_result.jpg
+│   ├── detection_0001.jpg
+│   └── ...
+├── predictions.json       # Predictions in JSON format
+└── predictions.csv        # Predictions in CSV format
 ```
 
 ## 🎓 How to Train This Model
@@ -397,6 +446,123 @@ model.eval()
 
 See LICENSE file for details.
 
+## 🚀 Advanced Usage
+
+### Resume Training from Checkpoint
+
+```python
+# In config.py, set:
+RESUME_TRAINING = True
+RESUME_CHECKPOINT = './checkpoints/latest_checkpoint.pth'
+
+# Then run training normally
+python hybriddetector/main.py
+```
+
+### Run Evaluation Only
+
+```python
+from trainer.evaluate import evaluate_model
+from utils import config
+import torch
+
+# Load model
+model = HybridDetector()
+model.load_state_dict(torch.load('./checkpoints/best_model.pth')['model_state_dict'])
+
+# Run evaluation
+results = evaluate_model(
+    model, 
+    val_loader, 
+    device='cuda',
+    num_classes=config.Config.NUM_CLASSES,
+    save_dir='./eval_results'
+)
+
+print(f"mAP@0.5: {results['mAP']:.4f}")
+```
+
+### Batch Inference on Test Set
+
+```python
+from inference.predictor import Predictor
+from utils import config
+
+# Create predictor
+predictor = Predictor(model, conf_thresh=0.3, iou_thresh=0.5, device='cuda')
+
+# Run batch inference
+results = predictor.predict_batch_dataset(
+    test_dataloader,
+    class_names=config.Config.CLASS_NAMES,
+    save_json=True,
+    save_csv=True,
+    output_dir='./test_results'
+)
+```
+
+### Visualize Results
+
+```python
+from inference.visualize import save_detection_image
+
+# Save single detection image
+save_detection_image(
+    image,
+    boxes,
+    labels,
+    scores,
+    class_names=config.Config.CLASS_NAMES,
+    save_path='./results/my_detection.jpg'
+)
+```
+
+## 📊 Performance Monitoring
+
+The framework automatically generates comprehensive performance metrics:
+
+### Training Metrics
+- **Loss Curves**: Total, BBox, Classification, and Objectness losses
+- **Checkpoints**: Regular saves with best model tracking
+- **Progress Tracking**: Real-time loss updates via tqdm
+
+### Evaluation Metrics
+- **mAP@0.5**: Standard COCO-style mean Average Precision
+- **Per-Class AP**: Individual performance for each class
+- **PR Curves**: Precision-Recall visualization
+- **Confusion Matrix**: Classification performance heatmap
+
+### Export Formats
+- **JSON**: Structured predictions with metadata
+- **CSV**: Tabular format for easy analysis
+- **Images**: Visualized detections with bounding boxes
+
+## 🛠️ Configuration Guide
+
+All settings are in `hybriddetector/utils/config.py`:
+
+```python
+# Training Settings
+BATCH_SIZE = 8          # Reduce if OOM
+USE_AMP = True          # Mixed precision (faster)
+EPOCHS = 50             # Training duration
+
+# Checkpointing
+SAVE_EVERY_N_EPOCHS = 5         # Checkpoint frequency
+SAVE_BEST = True                # Save best model
+RESUME_TRAINING = False         # Resume from checkpoint
+
+# Evaluation
+EVAL_EVERY_N_EPOCHS = 5         # Evaluation frequency
+SAVE_EVAL_PLOTS = True          # Generate plots
+
+# Paths
+SAVE_DIR = './checkpoints'      # Model checkpoints
+RESULTS_DIR = './results'       # All results
+PLOTS_DIR = './results/plots'   # Metrics plots
+VIS_DIR = './results/visualizations'  # Detection images
+```
+
 ## 🤝 Contributing
 
 Contributions are welcome! This modular architecture makes it easy to experiment with:
@@ -405,7 +571,25 @@ Contributions are welcome! This modular architecture makes it easy to experiment
 - Novel attention mechanisms
 - Custom loss functions
 - Enhanced data augmentation techniques
+- New evaluation metrics
+- Performance optimizations
+
+## 🎯 Roadmap
+
+- [x] Hybrid CNN-Transformer architecture
+- [x] Multi-scale feature fusion
+- [x] Mixed precision training
+- [x] Comprehensive evaluation metrics (mAP, PR curves, confusion matrix)
+- [x] Checkpoint management and resume training
+- [x] Batch inference with multiple export formats
+- [x] Automated visualization
+- [ ] Multi-GPU distributed training (DDP)
+- [ ] TensorBoard integration
+- [ ] ONNX export for deployment
+- [ ] Model quantization
+- [ ] Real-time video inference
+- [ ] Web demo interface
 
 ---
 
-**Note**: This is a research and development project implementing cutting-edge object detection techniques using hybrid CNN-Transformer architectures.
+**Note**: This is a production-ready object detection framework implementing cutting-edge hybrid CNN-Transformer architectures with complete YOLO-style features including training, evaluation, inference, and visualization capabilities.
