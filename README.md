@@ -557,6 +557,10 @@ def get_transforms(train=True, img_size=640):
         ])
 ```
 
+        ## Supported Dataset Layouts
+
+        Alternative layout also supported (common on Kaggle):
+
 #### Custom Training Loop
 
 For more control, modify `hybriddetector/trainer/train.py`:
@@ -741,6 +745,8 @@ save_detection_image(
     scores,
     class_names=config.Config.CLASS_NAMES,
     save_path='./results/my_detection.jpg'
+
+If you use this Kaggle layout, set `train:` in `data.yaml` to the **images folder** (e.g. `/kaggle/input/train/images`) and the code will infer labels as `/kaggle/input/train/labels`.
 )
 ```
 

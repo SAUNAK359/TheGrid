@@ -92,11 +92,28 @@ def infer_labels_dir(images_dir: Path) -> Path:
       /.../images/val   -> /.../labels/val
     """
     images_dir = images_dir.resolve()
+
+    # Common YOLO layout:
+    #   .../images/train  -> .../labels/train
+    #   .../images/val    -> .../labels/val
     if images_dir.parent.name == "images":
         return images_dir.parent.parent / "labels" / images_dir.name
 
-    # Fallback: try sibling 'labels/<split>' when images dir is '<split>'
-    return images_dir.parent / "labels" / images_dir.name
+    # Kaggle/common alt layout:
+    #   .../train/images  -> .../train/labels
+    #   .../val/images    -> .../val/labels
+    if images_dir.name == "images":
+        return images_dir.parent / "labels"
+
+    # Fallbacks:
+    #   .../<root>/<split> -> .../<root>/labels/<split>
+    candidate1 = images_dir.parent / "labels" / images_dir.name
+    candidate2 = images_dir.parent / "labels"
+    if candidate1.exists():
+        return candidate1
+    if candidate2.exists():
+        return candidate2
+    return candidate1
 
 
 def load_weights(model: torch.nn.Module, weights_path: str, device: str) -> None:
@@ -120,6 +137,14 @@ def cmd_train(args: argparse.Namespace) -> None:
     if train_images is None:
         raise ValueError("data.yaml must contain a 'train' path")
     train_labels = infer_labels_dir(train_images)
+
+    if not train_labels.exists():
+        raise FileNotFoundError(
+            "YOLO labels directory not found. "
+            f"From train images path: {train_images} -> inferred labels dir: {train_labels}. "
+            "Expected per-image .txt files in YOLO format. "
+            "Fix your dataset layout or adjust data.yaml 'train' to point to the correct images folder."
+        )
 
     val_images: Optional[Path] = data.get("val_images")
     val_labels: Optional[Path] = infer_labels_dir(val_images) if val_images else None
