@@ -1,6 +1,62 @@
 # TheGrid - Hybrid CNN Vision Transformer for Object Detection
 
-A state-of-the-art object detection framework combining Convolutional Neural Networks (CNN) and Vision Transformers to achieve superior performance in detecting and classifying objects in images.
+![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)
+![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-orange.svg)
+![License](https://img.shields.io/badge/License-MIT-green.svg)
+![Status](https://img.shields.io/badge/Status-Production--Ready-success.svg)
+
+A **production-ready** object detection framework combining Convolutional Neural Networks (CNN) and Vision Transformers with complete YOLO-style features including training, evaluation, inference, and visualization capabilities.
+
+## 📑 Table of Contents
+
+- [Key Features](#-key-features)
+- [Overview](#-overview)
+- [Tech Stack](#️-tech-stack)
+- [Project Structure](#️-project-structure)
+- [Installation](#-installation)
+- [Quick Start](#-quick-start)
+- [How to Train](#-how-to-train-this-model)
+- [Advanced Usage](#-advanced-usage)
+- [Performance Monitoring](#-performance-monitoring)
+- [Configuration Guide](#️-configuration-guide)
+- [Technical Report](#-technical-report)
+- [Contributing](#-contributing)
+- [Roadmap](#-roadmap)
+- [License](#-license)
+
+## ✨ Key Features
+
+🎯 **Hybrid Architecture**
+- CNN backbone for local feature extraction
+- Vision Transformer blocks for global context
+- Multi-scale feature fusion (FPN-style)
+- Separate detection heads (bbox, objectness, classification)
+
+⚡ **Performance Optimized**
+- Mixed Precision Training (AMP) for 2x speedup
+- Multi-worker data loading
+- Efficient batch processing
+- CUDA acceleration support
+
+📊 **Complete Evaluation Suite**
+- mAP@0.5 calculation (COCO-style)
+- Per-class Average Precision
+- Precision-Recall curves
+- Confusion matrix visualization
+- Training loss tracking and plotting
+
+🔧 **Production Features**
+- Checkpoint management with best model tracking
+- Resume training from any checkpoint
+- Batch inference with JSON/CSV export
+- Automated visualization with bounding boxes
+- YOLO dataset format support
+
+📁 **Professional Output**
+- Model checkpoints with optimizer state
+- Training curves and evaluation plots
+- Detection visualizations
+- Structured result exports (JSON/CSV)
 
 ## 📋 Overview
 
@@ -21,7 +77,11 @@ TheGrid implements a hybrid architecture that leverages the strengths of both CN
 ### Computer Vision & Data Processing
 - **PIL (Pillow)**: Image loading and preprocessing
 - **NumPy**: Numerical computations and array operations
-- **OpenCV** (implied): Image visualization and transformations
+- **OpenCV**: Image visualization and transformations
+- **Matplotlib**: Plotting and visualization
+- **Seaborn**: Statistical data visualization
+- **scikit-learn**: Machine learning utilities (confusion matrix)
+- **tqdm**: Progress bars for training and inference
 
 ### Model Architecture Components
 - **CNN Backbone**: Multi-scale feature extraction with 3 feature pyramid levels
@@ -35,16 +95,21 @@ TheGrid implements a hybrid architecture that leverages the strengths of both CN
 ### Training Infrastructure
 - **AdamW Optimizer**: Weight decay-based optimization (lr=1e-3, wd=1e-4)
 - **Learning Rate Scheduler**: Adaptive learning rate adjustment
+- **Mixed Precision (AMP)**: Automatic Mixed Precision for faster training
 - **Custom Loss Functions**:
-  - Bounding box loss
-  - Classification loss
+  - Bounding box loss (GIoU)
+  - Classification loss (Focal Loss)
   - Objectness loss
 - **Data Augmentation**: Training-specific transformations
+- **Checkpointing**: Auto-save with resume capability
 
 ### Inference & Evaluation
 - **NMS (Non-Maximum Suppression)**: Duplicate detection filtering
+- **mAP Calculation**: Mean Average Precision at IoU=0.5
 - **Prediction Pipeline**: End-to-end inference with confidence thresholding
-- **Visualization Tools**: Detection result rendering
+- **Batch Processing**: Efficient dataset-wide inference
+- **Visualization Tools**: Detection result rendering with bounding boxes
+- **Export Formats**: JSON, CSV, and image outputs
 
 ## 🏗️ Project Structure
 
@@ -116,9 +181,32 @@ hybriddetector/
 ## 🔧 Installation
 
 ```bash
+# Clone the repository
+git clone https://github.com/SAUNAK359/TheGrid.git
+cd TheGrid
+
 # Install required dependencies
 pip install torch torchvision pillow numpy matplotlib seaborn scikit-learn opencv-python tqdm
 ```
+
+## 🚀 Quick Start
+
+```bash
+# 1. Prepare your YOLO format dataset (see Dataset Preparation section)
+# 2. Update configuration in hybriddetector/utils/config.py
+# 3. Start training
+python hybriddetector/main.py
+```
+
+**That's it!** The framework will automatically:
+- ✅ Train with mixed precision for optimal performance
+- ✅ Save checkpoints every 5 epochs
+- ✅ Generate evaluation metrics (mAP, PR curves, confusion matrix)
+- ✅ Create loss curves and visualizations
+- ✅ Save predictions in JSON and CSV formats
+- ✅ Export detection images with bounding boxes
+
+All results will be organized in the `./results` directory.
 
 ## 💻 Usage
 
