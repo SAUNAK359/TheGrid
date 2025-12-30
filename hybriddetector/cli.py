@@ -122,7 +122,71 @@ def load_weights(model: torch.nn.Module, weights_path: str, device: str) -> None
         state = ckpt["model_state_dict"]
     else:
         state = ckpt
-    model.load_state_dict(state, strict=False)
+
+    if not isinstance(state, dict):
+        raise TypeError(
+            "Checkpoint must be a state_dict mapping or contain 'model_state_dict'. "
+            f"Got: {type(state)!r}"
+        )
+
+    # If the checkpoint was trained with a different class count, adapt the head.
+    # Common key for this project: cls_head.conv.weight has shape [A*C, 256, 1, 1]
+    try:
+        from hybriddetector.heads.class_head import ClassHead
+
+        if hasattr(model, "cls_head") and "cls_head.conv.weight" in state:
+            w = state.get("cls_head.conv.weight")
+            if isinstance(w, torch.Tensor) and w.ndim == 4:
+                out_channels = int(w.shape[0])
+                in_channels = int(w.shape[1])
+
+                num_anchors = int(getattr(getattr(model, "cls_head"), "num_anchors", 1))
+                if num_anchors <= 0:
+                    num_anchors = 1
+                if out_channels % num_anchors == 0:
+                    num_classes = out_channels // num_anchors
+                else:
+                    # Fallback: treat out_channels as class count if not divisible.
+                    num_classes = out_channels
+
+                current_classes = getattr(getattr(model, "cls_head"), "num_classes", None)
+                current_out = getattr(getattr(getattr(model, "cls_head"), "conv", None), "out_channels", None)
+                if current_classes != num_classes or current_out != out_channels:
+                    head_device = next(model.parameters()).device
+                    model.cls_head = ClassHead(
+                        in_channels=in_channels,
+                        num_anchors=num_anchors,
+                        num_classes=num_classes,
+                    ).to(head_device)
+                    print(
+                        "Adjusted cls_head to match checkpoint: "
+                        f"num_anchors={num_anchors}, num_classes={num_classes}"
+                    )
+    except Exception:
+        # Best-effort only; we still perform mismatch-stripping below.
+        pass
+
+    # strict=False still errors on shape mismatches, so drop those keys.
+    model_state = model.state_dict()
+    filtered: Dict[str, Any] = {}
+    mismatched: List[Tuple[str, Any, Any]] = []
+    for k, v in state.items():
+        if k in model_state and isinstance(v, torch.Tensor) and isinstance(model_state[k], torch.Tensor):
+            if v.shape != model_state[k].shape:
+                mismatched.append((k, tuple(v.shape), tuple(model_state[k].shape)))
+                continue
+        filtered[k] = v
+
+    incompatible = model.load_state_dict(filtered, strict=False)
+
+    if mismatched:
+        print("Warning: skipped mismatched checkpoint tensors:")
+        for k, ckpt_shape, model_shape in mismatched:
+            print(f"  - {k}: checkpoint={ckpt_shape} model={model_shape}")
+    if getattr(incompatible, "missing_keys", None):
+        print(f"Warning: missing keys when loading weights: {len(incompatible.missing_keys)}")
+    if getattr(incompatible, "unexpected_keys", None):
+        print(f"Warning: unexpected keys in checkpoint: {len(incompatible.unexpected_keys)}")
 
 
 def cmd_train(args: argparse.Namespace) -> None:
