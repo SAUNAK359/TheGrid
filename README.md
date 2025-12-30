@@ -5,7 +5,7 @@
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 ![Status](https://img.shields.io/badge/Status-Production--Ready-success.svg)
 
-A **production-ready** object detection framework combining Convolutional Neural Networks (CNN) and Vision Transformers with complete YOLO-style features including training, evaluation, inference, and visualization capabilities.
+A practical object detection framework combining Convolutional Neural Networks (CNN) and Vision Transformers with YOLO-style training/inference utilities (training, evaluation, inference, and visualization).
 
 ## 📑 Table of Contents
 
@@ -155,7 +155,7 @@ hybriddetector/
 ### Training Configuration
 - **Image Size**: 640×640 pixels
 - **Batch Size**: 8
-- **Epochs**: 50
+- **Epochs**: 5 (default; increase via CLI for longer runs)
 - **Number of Classes**: 20
 - **Transformer Heads**: 8
 - **Learning Rate**: 1e-3 with weight decay 1e-4
@@ -202,9 +202,13 @@ This repo is structured so you can **clone into Kaggle** and run commands simila
 - Create your `data.yaml` (start from `data.yaml.example`) and point it to your dataset.
 - Use the module CLI:
 
-Train:
+Train (fast default):
 
-`python -m hybriddetector train --data /kaggle/working/data.yaml --epochs 50 --batch 8 --img 640 --device cuda`
+`python -m hybriddetector train --data /kaggle/working/data.yaml --epochs 5 --batch 8 --img 640 --device cuda`
+
+Train with early stopping (recommended when you have a validation split):
+
+`python -m hybriddetector train --data /kaggle/working/data.yaml --epochs 50 --early-stop --patience 5 --min-epochs 5 --val-every 1`
 
 Resume:
 
@@ -213,6 +217,11 @@ Resume:
 Predict (testing):
 
 `python -m hybriddetector predict --weights checkpoints/best_model.pth --source /kaggle/input/yourdataset/images/val --data /kaggle/working/data.yaml --save-dir results/visualizations`
+
+Notes:
+- Inference uses the same normalization as training.
+- Visualizations are saved as normal (non-black) RGB images with boxes drawn.
+- If you see no boxes, try lowering the threshold: `--conf 0.01`
 
 Dataset layout must follow YOLO convention:
 

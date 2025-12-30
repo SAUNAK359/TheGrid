@@ -6,6 +6,7 @@ import torch
 import numpy as np
 from pathlib import Path
 import cv2
+from typing import Union
 
 
 def visualize_predictions(image, boxes, labels=None, scores=None, class_names=None, save_path=None, show=True):
@@ -39,7 +40,8 @@ def visualize_predictions(image, boxes, labels=None, scores=None, class_names=No
     
     # Generate random colors for different classes
     np.random.seed(42)
-    colors = plt.cm.rainbow(np.linspace(0, 1, 20))
+    cmap = plt.cm.get_cmap("rainbow")
+    colors = cmap(np.linspace(0, 1, 20))
 
     for i, box in enumerate(boxes):
         x1, y1, x2, y2 = box
@@ -96,7 +98,14 @@ def visualize_predictions(image, boxes, labels=None, scores=None, class_names=No
         plt.close()
 
 
-def save_detection_image(image, boxes, labels, scores, class_names=None, save_path='detection.jpg'):
+def save_detection_image(
+    image,
+    boxes,
+    labels,
+    scores,
+    class_names=None,
+    save_path: Union[str, Path] = 'detection.jpg',
+):
     """
     Save detection results as an image file using OpenCV.
     
@@ -108,14 +117,33 @@ def save_detection_image(image, boxes, labels, scores, class_names=None, save_pa
         class_names: List of class names
         save_path: Path to save the image
     """
-    # Convert tensor to numpy
+    # Convert tensor to numpy (HWC RGB)
     if isinstance(image, torch.Tensor):
-        image = image.permute(1, 2, 0).cpu().numpy()
-    
-    # Convert to BGR for OpenCV
-    if image.max() <= 1.0:
-        image = (image * 255).astype(np.uint8)
-    
+        image = image.detach().permute(1, 2, 0).cpu().numpy()
+
+    # Ensure uint8 RGB for OpenCV. Handle common normalized tensors.
+    if image.dtype != np.uint8:
+        img = image.astype(np.float32)
+
+        img_min = float(np.min(img)) if img.size else 0.0
+        img_max = float(np.max(img)) if img.size else 1.0
+
+        # Heuristic: ImageNet-normalized tensors typically have values ~[-2, 2].
+        if img_min < -0.5 or img_max > 1.5:
+            mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+            std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+            img = (img * std) + mean
+
+        # If still not in [0,1], rescale for visualization only.
+        img_min = float(np.min(img)) if img.size else 0.0
+        img_max = float(np.max(img)) if img.size else 1.0
+        if img_max > 1.0 or img_min < 0.0:
+            denom = (img_max - img_min) if (img_max - img_min) > 1e-8 else 1.0
+            img = (img - img_min) / denom
+
+        img = np.clip(img, 0.0, 1.0)
+        image = (img * 255.0).round().astype(np.uint8)
+
     image_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
     
     H, W = image_bgr.shape[:2]

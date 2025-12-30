@@ -94,55 +94,14 @@ class Trainer:
 
         for batch_idx, (images, targets) in enumerate(loop):
             images = images.to(self.device)
-            
-            # Forward pass with mixed precision
+
+            loss_bbox, loss_cls, loss_obj = self._forward_loss(images, targets)
+            loss = (loss_bbox + loss_cls + loss_obj) / self.grad_accum_steps
+
             if self.use_amp:
                 assert self.scaler is not None
-                with autocast(device_type='cuda'):
-                    outputs = self.model(images)
-
-                    pred_boxes = outputs['boxes']
-                    pred_obj = outputs['objectness']
-                    pred_cls = outputs['class_probs']
-
-                    target_boxes, target_labels, target_obj = self._encode_dense_targets(pred_boxes, targets)
-
-                    # Objectness on all anchors
-                    loss_obj = self.obj_loss_fn(pred_obj, target_obj)
-
-                    # Class only on positive anchors (background uses ignore_index=-1)
-                    loss_cls = self.cls_loss_fn(pred_cls, target_labels)
-
-                    # BBox only on positive anchors
-                    pos_mask = target_obj.squeeze(-1) > 0.5
-                    if pos_mask.any():
-                        loss_bbox = self.bbox_loss_fn(pred_boxes[pos_mask], target_boxes[pos_mask])
-                    else:
-                        loss_bbox = pred_boxes.sum() * 0.0
-
-                    loss = (loss_bbox + loss_cls + loss_obj) / self.grad_accum_steps
-
                 self.scaler.scale(loss).backward()
             else:
-                outputs = self.model(images)
-
-                pred_boxes = outputs['boxes']
-                pred_obj = outputs['objectness']
-                pred_cls = outputs['class_probs']
-
-                target_boxes, target_labels, target_obj = self._encode_dense_targets(pred_boxes, targets)
-
-                loss_obj = self.obj_loss_fn(pred_obj, target_obj)
-                loss_cls = self.cls_loss_fn(pred_cls, target_labels)
-
-                pos_mask = target_obj.squeeze(-1) > 0.5
-                if pos_mask.any():
-                    loss_bbox = self.bbox_loss_fn(pred_boxes[pos_mask], target_boxes[pos_mask])
-                else:
-                    loss_bbox = pred_boxes.sum() * 0.0
-
-                loss = (loss_bbox + loss_cls + loss_obj) / self.grad_accum_steps
-
                 loss.backward()
 
             # Optimizer step on accumulation boundary
@@ -195,6 +154,87 @@ class Trainer:
             'cls': avg_cls_loss,
             'obj': avg_obj_loss
         }
+
+    @torch.no_grad()
+    def eval_epoch(self, val_dataset, batch_size: int = 4, num_workers: int = 4,
+                   pin_memory: bool = True, persistent_workers: bool = True,
+                   prefetch_factor: int = 2):
+        """Evaluate average losses on a validation dataset (no backprop).
+
+        This is intended for early stopping / model selection.
+        """
+        self.model.eval()
+
+        dl_kwargs = {
+            "batch_size": int(batch_size),
+            "shuffle": False,
+            "collate_fn": self.collate_fn,
+            "num_workers": int(num_workers),
+            "pin_memory": bool(pin_memory),
+        }
+        if dl_kwargs["num_workers"] > 0:
+            dl_kwargs["persistent_workers"] = bool(persistent_workers)
+            dl_kwargs["prefetch_factor"] = int(prefetch_factor)
+
+        val_loader = DataLoader(val_dataset, **dl_kwargs)
+        total_loss = 0.0
+        bbox_loss_total = 0.0
+        cls_loss_total = 0.0
+        obj_loss_total = 0.0
+
+        loop = tqdm(val_loader, desc=f"Val (epoch {self.current_epoch})")
+        for images, targets in loop:
+            images = images.to(self.device)
+            loss_bbox, loss_cls, loss_obj = self._forward_loss(images, targets)
+
+            total = (loss_bbox + loss_cls + loss_obj).item()
+            total_loss += total
+            bbox_loss_total += loss_bbox.item()
+            cls_loss_total += loss_cls.item()
+            obj_loss_total += loss_obj.item()
+
+            loop.set_postfix({
+                'loss': f'{total:.4f}',
+                'bbox': f'{loss_bbox.item():.4f}',
+                'cls': f'{loss_cls.item():.4f}',
+                'obj': f'{loss_obj.item():.4f}'
+            })
+
+        n = max(1, len(val_loader))
+        return {
+            'total': total_loss / n,
+            'bbox': bbox_loss_total / n,
+            'cls': cls_loss_total / n,
+            'obj': obj_loss_total / n,
+        }
+
+    def _forward_loss(self, images: torch.Tensor, targets: list[dict]):
+        """Compute per-component losses for a batch."""
+        if self.use_amp:
+            with autocast(device_type='cuda'):
+                outputs = self.model(images)
+                return self._loss_from_outputs(outputs, targets)
+
+        outputs = self.model(images)
+        return self._loss_from_outputs(outputs, targets)
+
+    def _loss_from_outputs(self, outputs: dict, targets: list[dict]):
+        pred_boxes = outputs['boxes']
+        pred_obj = outputs['objectness']
+        pred_cls = outputs['class_probs']
+
+        target_boxes, target_labels, target_obj = self._encode_dense_targets(pred_boxes, targets)
+
+        loss_obj = self.obj_loss_fn(pred_obj, target_obj)
+        loss_cls = self.cls_loss_fn(pred_cls, target_labels)
+
+        pos_mask = target_obj.squeeze(-1) > 0.5
+        if pos_mask.any():
+            loss_bbox = self.bbox_loss_fn(pred_boxes[pos_mask], target_boxes[pos_mask])
+        else:
+            loss_bbox = pred_boxes.sum() * 0.0
+
+        return loss_bbox, loss_cls, loss_obj
 
     def _encode_dense_targets(self, pred_boxes: torch.Tensor, targets: list[dict]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Encode YOLO-format GT boxes into dense anchor targets aligned with model outputs.

@@ -7,7 +7,8 @@ class Config:
     # Training Hyperparameters
     BATCH_SIZE = 8
     IMG_SIZE = 640
-    EPOCHS = 50
+    # Keep default training quick; override via CLI --epochs for longer runs.
+    EPOCHS = 5
     LR = 1e-3
     WEIGHT_DECAY = 1e-4
     USE_AMP = True  # Mixed precision training (faster on modern GPUs)

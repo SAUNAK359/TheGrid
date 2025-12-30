@@ -198,6 +198,18 @@ PublishScripts/
 *.nupkg
 # NuGet Symbol Packages
 *.snupkg
+
+# --- Python / ML artifacts ---
+__pycache__/
+*.pyc
+
+# Model checkpoints / weights
+*.pth
+*.pt
+
+# Local inference outputs
+results*/
+*_pred.jpg
 # The packages folder can be ignored because of Package Restore
 **/[Pp]ackages/*
 # except build/, which is used as an MSBuild target.

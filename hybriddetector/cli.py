@@ -272,6 +272,10 @@ def cmd_train(args: argparse.Namespace) -> None:
         print(f"Val images: {val_images}")
         print(f"Val labels: {val_labels}")
 
+    # Early stopping uses val loss when val is available.
+    best_metric = float("inf")
+    epochs_no_improve = 0
+
     for epoch in range(start_epoch, args.epochs):
         trainer.current_epoch = epoch
         loss = trainer.train_epoch()
@@ -280,11 +284,42 @@ def cmd_train(args: argparse.Namespace) -> None:
             f"(bbox={loss['bbox']:.4f}, cls={loss['cls']:.4f}, obj={loss['obj']:.4f})"
         )
 
+        val_loss = None
+        if val_ds is not None and args.val_every > 0 and ((epoch + 1) % args.val_every == 0):
+            val_loss = trainer.eval_epoch(
+                val_ds,
+                batch_size=args.batch,
+                num_workers=args.workers,
+                pin_memory=bool(args.pin_memory),
+                persistent_workers=bool(args.persistent_workers),
+                prefetch_factor=args.prefetch_factor,
+            )
+            print(
+                f"val   {epoch+1}/{args.epochs} | loss={val_loss['total']:.4f} "
+                f"(bbox={val_loss['bbox']:.4f}, cls={val_loss['cls']:.4f}, obj={val_loss['obj']:.4f})"
+            )
+
+        # Choose metric for best-model + early stopping
+        metric = val_loss['total'] if val_loss is not None else loss['total']
+        is_improved = metric < best_metric
+        if is_improved:
+            best_metric = metric
+            epochs_no_improve = 0
+        else:
+            epochs_no_improve += 1
+
         if (epoch + 1) % args.save_period == 0 or (epoch + 1) == args.epochs:
-            is_best = loss["total"] < trainer.best_loss
+            is_best = is_improved
             if is_best:
-                trainer.best_loss = loss["total"]
+                trainer.best_loss = metric
             trainer.save_checkpoint(epoch + 1, is_best=is_best)
+
+        if args.early_stop and (epoch + 1) >= args.min_epochs and epochs_no_improve >= args.patience:
+            print(
+                f"Early stopping: no improvement for {epochs_no_improve} epochs "
+                f"(patience={args.patience}). Best metric={best_metric:.4f}"
+            )
+            break
 
     print(f"\nDone. Checkpoints in: {Path(args.project).resolve()}")
 
@@ -321,10 +356,11 @@ def cmd_predict(args: argparse.Namespace) -> None:
     save_dir = Path(args.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    tf = TV.Compose([
-        TV.Resize((args.img, args.img)),
-        TV.ToTensor(),
-    ])
+    # Match training/val preprocessing for the model input, but keep an unnormalized
+    # copy for visualization (OpenCV expects 0-255-ish pixel space).
+    tf_resize = TV.Resize((args.img, args.img))
+    tf_to_tensor = TV.ToTensor()
+    tf_norm = TV.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
 
     images = _iter_images(source)
     if not images:
@@ -332,14 +368,17 @@ def cmd_predict(args: argparse.Namespace) -> None:
 
     for img_path in images:
         img = Image.open(img_path).convert("RGB")
-        t = tf(img)
-        if not isinstance(t, torch.Tensor):
+        img = tf_resize(img)
+        t_raw = tf_to_tensor(img)
+        t = tf_norm(t_raw)
+
+        if not isinstance(t, torch.Tensor) or not isinstance(t_raw, torch.Tensor):
             raise TypeError("Expected torchvision transform to return a torch.Tensor")
 
         boxes, scores, labels = pred.predict_single_image(t)
 
         out_path = save_dir / f"{img_path.stem}_pred.jpg"
-        save_detection_image(t, boxes, labels, scores, class_names=class_names, save_path=str(out_path))
+        save_detection_image(t_raw, boxes, labels, scores, class_names=class_names, save_path=str(out_path))
 
     print(f"Saved predictions to: {save_dir.resolve()}")
 
@@ -379,6 +418,20 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--project", type=str, default=str(config.Config.SAVE_DIR))
     t.add_argument("--save-period", type=int, default=int(getattr(config.Config, "SAVE_EVERY_N_EPOCHS", 5)))
     t.add_argument("--resume", type=str, default="", help="Path to checkpoint .pth to resume")
+
+    t.add_argument(
+        "--val-every",
+        type=int,
+        default=int(getattr(config.Config, "EVAL_EVERY_N_EPOCHS", 5)),
+        help="Run validation-loss evaluation every N epochs (0 disables).",
+    )
+    t.add_argument(
+        "--early-stop",
+        action="store_true",
+        help="Enable early stopping based on validation loss when val is available (else train loss).",
+    )
+    t.add_argument("--patience", type=int, default=5, help="Early stopping patience (epochs).")
+    t.add_argument("--min-epochs", type=int, default=5, help="Minimum epochs before early stopping can trigger.")
     t.set_defaults(func=cmd_train)
 
     pr = sub.add_parser("predict", help="Run inference on an image or folder")
