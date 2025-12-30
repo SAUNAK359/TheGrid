@@ -53,7 +53,8 @@ def giou_loss(pred, target):
 
     area_c = (c_x2 - c_x1) * (c_y2 - c_y1)
     giou = iou - (area_c - (area_c * 0 + 1))/area_c  # simplified
-    return 1 - iou  # For now, fallback to IoU loss
+    # For now, fallback to IoU loss; reduce to scalar for stable training.
+    return (1 - iou).mean()
 
 if __name__ == "__main__":
     pred = torch.tensor([[[0.5,0.5,0.2,0.2]]])

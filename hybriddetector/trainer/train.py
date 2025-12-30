@@ -2,7 +2,8 @@
 
 import torch
 from torch.utils.data import DataLoader
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp.autocast_mode import autocast
+from torch.amp.grad_scaler import GradScaler
 from tqdm import tqdm
 from pathlib import Path
 import json
@@ -48,8 +49,8 @@ class Trainer:
         self.obj_loss_fn = obj_loss.ObjectnessLoss()
         
         # Mixed precision training
-        self.use_amp = use_amp and device == 'cuda'
-        self.scaler = GradScaler() if self.use_amp else None
+        self.use_amp = bool(use_amp) and str(device).startswith('cuda')
+        self.scaler = GradScaler('cuda') if self.use_amp else None
         
         # Checkpointing
         self.checkpoint_dir = Path(checkpoint_dir)
@@ -97,7 +98,7 @@ class Trainer:
             # Forward pass with mixed precision
             if self.use_amp:
                 assert self.scaler is not None
-                with autocast():
+                with autocast(device_type='cuda'):
                     outputs = self.model(images)
 
                     pred_boxes = outputs['boxes']

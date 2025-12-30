@@ -292,13 +292,22 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--device", type=str, default=config.Config.DEVICE)
     t.add_argument("--lr", type=float, default=config.Config.LR)
     t.add_argument("--weight-decay", type=float, default=config.Config.WEIGHT_DECAY)
-    t.add_argument("--amp", action="store_true", default=bool(config.Config.USE_AMP))
+    t.add_argument(
+        "--amp",
+        action=argparse.BooleanOptionalAction,
+        default=bool(config.Config.USE_AMP),
+        help="Enable/disable mixed precision (CUDA only).",
+    )
     t.add_argument("--accumulate", type=int, default=int(getattr(config.Config, "GRAD_ACCUM_STEPS", 1)))
     t.add_argument("--workers", type=int, default=int(getattr(config.Config, "NUM_WORKERS", 4)))
-    t.add_argument("--pin-memory", action="store_true", default=bool(getattr(config.Config, "PIN_MEMORY", True)))
+    t.add_argument(
+        "--pin-memory",
+        action=argparse.BooleanOptionalAction,
+        default=bool(getattr(config.Config, "PIN_MEMORY", True)),
+    )
     t.add_argument(
         "--persistent-workers",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
         default=bool(getattr(config.Config, "PERSISTENT_WORKERS", True)),
     )
     t.add_argument("--prefetch-factor", type=int, default=int(getattr(config.Config, "PREFETCH_FACTOR", 2)))

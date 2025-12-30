@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 
+import numpy as np
 import torch
 from torch.utils.data import Dataset
 from PIL import Image
@@ -104,7 +105,8 @@ class CustomDataset(Dataset):
     def __getitem__(self, idx):
         img_name = self.image_list[idx]
         img_path = os.path.join(self.img_dir, img_name)
-        image = Image.open(img_path).convert("RGB")
+        # Albumentations expects images as NumPy arrays (HWC).
+        image = np.array(Image.open(img_path).convert("RGB"))
 
         if self.mode == "yolo":
             boxes, labels = self._load_yolo_labels(img_name)
@@ -119,10 +121,24 @@ class CustomDataset(Dataset):
         target = {'boxes': boxes, 'labels': labels}
 
         if self.transform:
-            transformed = self.transform(image=image, bboxes=boxes, class_labels=labels)
+            # Albumentations bbox pipeline expects Python lists (not torch tensors).
+            bboxes_in = boxes.tolist() if isinstance(boxes, torch.Tensor) else boxes.tolist()
+            labels_in = labels.tolist() if isinstance(labels, torch.Tensor) else labels.tolist()
+
+            transformed = self.transform(image=image, bboxes=bboxes_in, class_labels=labels_in)
             image = transformed['image']
-            target['boxes'] = torch.tensor(transformed['bboxes'], dtype=torch.float32)
-            target['labels'] = torch.tensor(transformed['class_labels'], dtype=torch.long)
+            bboxes_out = transformed.get('bboxes', [])
+            labels_out = transformed.get('class_labels', [])
+
+            if len(bboxes_out) == 0:
+                target['boxes'] = torch.zeros((0, 4), dtype=torch.float32)
+            else:
+                target['boxes'] = torch.tensor(bboxes_out, dtype=torch.float32)
+
+            if len(labels_out) == 0:
+                target['labels'] = torch.zeros((0,), dtype=torch.long)
+            else:
+                target['labels'] = torch.tensor(labels_out, dtype=torch.long)
 
         return image, target
 
