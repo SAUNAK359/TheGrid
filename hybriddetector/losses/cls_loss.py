@@ -1,0 +1,32 @@
+# hybriddetector/losses/cls_loss.py
+
+import torch
+import torch.nn as nn
+
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=1.0, gamma=2.0, reduction='mean'):
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+        self.ce = nn.CrossEntropyLoss(reduction='none')
+
+    def forward(self, logits, targets):
+        """
+        logits: [B, N, num_classes]
+        targets: [B, N] long tensor
+        """
+        ce_loss = self.ce(logits.view(-1, logits.size(-1)), targets.view(-1))
+        pt = torch.exp(-ce_loss)
+        loss = self.alpha * (1-pt)**self.gamma * ce_loss
+        if self.reduction=='mean':
+            return loss.mean()
+        elif self.reduction=='sum':
+            return loss.sum()
+        return loss
+
+if __name__ == "__main__":
+    logits = torch.randn(2,3,5)   # B=2, N=3, num_classes=5
+    targets = torch.tensor([[0,1,2],[2,3,4]])
+    loss_fn = FocalLoss()
+    print("Focal loss:", loss_fn(logits, targets))
