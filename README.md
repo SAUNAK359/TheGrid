@@ -218,6 +218,105 @@ Dataset layout must follow YOLO convention:
 
 `images/train`, `images/val`, `labels/train`, `labels/val` with per-image `.txt` labels.
 
+---
+
+## 🏷️ How to Use YOLO `.txt` Labels (Step-by-Step)
+
+This project expects **YOLO-format label files**: one `.txt` per image, same filename (different extension), stored under `labels/<split>/`.
+
+### Step 1 — Create the YOLO folder structure
+
+```
+dataset/
+    images/
+        train/
+            img001.jpg
+            img002.jpg
+        val/
+            img101.jpg
+    labels/
+        train/
+            img001.txt
+            img002.txt
+        val/
+            img101.txt
+```
+
+### Step 2 — Create `data.yaml`
+
+Start from `data.yaml.example` and update it:
+
+```yaml
+path: .
+train: dataset/images/train
+val: dataset/images/val
+
+names:
+    - person
+    - car
+    - dog
+```
+
+Important:
+- Class IDs in `.txt` must match the **index** in `names` (0-based).
+    - `person` → `0`, `car` → `1`, `dog` → `2`
+
+### Step 3 — Create one `.txt` per image
+
+For an image `dataset/images/train/img001.jpg`, create:
+
+`dataset/labels/train/img001.txt`
+
+If an image has **no objects**, you can either:
+- Create an **empty** `.txt` file, or
+- Omit the `.txt` file entirely (this code treats missing labels as “no boxes”).
+
+### Step 4 — Write labels in YOLO format
+
+Each line is:
+
+```
+class_id x_center y_center width height
+```
+
+All coordinates are **normalized** to `[0, 1]` relative to image width/height:
+
+- `x_center = x_center_pixels / image_width`
+- `y_center = y_center_pixels / image_height`
+- `width = box_width_pixels / image_width`
+- `height = box_height_pixels / image_height`
+
+### Step 5 — Example label file
+
+If `img001.jpg` contains:
+- a `person` (class 0) near the center
+- a `car` (class 1) on the left
+
+Then `img001.txt` might look like:
+
+```
+0 0.50 0.50 0.20 0.40
+1 0.25 0.60 0.30 0.25
+```
+
+Notes:
+- Multiple objects → multiple lines.
+- Values must be separated by spaces.
+- Use `.` decimals (not commas).
+
+### Step 6 — Common mistakes to avoid
+
+- ❌ Using `x1 y1 x2 y2` (corner format). YOLO requires **center + width/height**.
+- ❌ Using pixel coordinates. Values must be **normalized** to `[0,1]`.
+- ❌ Wrong class IDs (must match the `names:` order).
+- ❌ Mismatched filenames (label must match image stem exactly).
+
+### Step 7 — Train
+
+Once your folders + labels are ready:
+
+`python -m hybriddetector train --data ./data.yaml --epochs 50 --batch 8 --img 640 --device cuda`
+
 ```bash
 # 1. Prepare your YOLO format dataset (see Dataset Preparation section)
 # 2. Update configuration in hybriddetector/utils/config.py
