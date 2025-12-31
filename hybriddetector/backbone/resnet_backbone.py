@@ -36,6 +36,14 @@ class ResNetBackbone(nn.Module):
 
         resnet = getattr(torchvision.models, name)(weights=weights)
 
+        # Public metadata for downstream heads/fusion.
+        # Returned feature maps are P3/P4/P5 with strides 8/16/32.
+        self.strides = [8, 16, 32]
+        if name in {"resnet18", "resnet34"}:
+            self.out_channels = [128, 256, 512]
+        else:
+            self.out_channels = [512, 1024, 2048]
+
         # Stem
         self.conv1 = resnet.conv1
         self.bn1 = resnet.bn1

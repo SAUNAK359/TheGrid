@@ -123,8 +123,21 @@ def evaluate_model(model, dataloader, device, num_classes, save_dir='./results',
                 })
                 
                 # Extract ground truths (targets is a list[dict])
-                gt_boxes = targets[img_idx]['boxes'].cpu().numpy()
+                # Dataset provides YOLO boxes (xc,yc,w,h) normalized to [0,1].
+                # Metrics expect xyxy, so convert here.
+                gt_boxes_yolo = targets[img_idx]['boxes']
                 gt_labels = targets[img_idx]['labels'].cpu().numpy()
+
+                if gt_boxes_yolo.numel() == 0:
+                    gt_boxes = gt_boxes_yolo.cpu().numpy().reshape(0, 4)
+                else:
+                    gt_boxes_yolo = gt_boxes_yolo.to(dtype=torch.float32)
+                    xc, yc, w, h = gt_boxes_yolo.unbind(dim=-1)
+                    x1 = (xc - w / 2).clamp(0.0, 1.0)
+                    y1 = (yc - h / 2).clamp(0.0, 1.0)
+                    x2 = (xc + w / 2).clamp(0.0, 1.0)
+                    y2 = (yc + h / 2).clamp(0.0, 1.0)
+                    gt_boxes = torch.stack([x1, y1, x2, y2], dim=-1).cpu().numpy()
                 
                 all_ground_truths.append({
                     'boxes': gt_boxes,

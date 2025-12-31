@@ -266,6 +266,12 @@ def cmd_train(args: argparse.Namespace) -> None:
                 raise
             print(f"Warning: dataset audit skipped/failed: {e}")
 
+    # Apply runtime backbone choice (keeps global Config minimal but allows CLI override).
+    if getattr(args, "backbone", ""):
+        config.Config.BACKBONE = str(args.backbone)
+    if getattr(args, "backbone_pretrained", None) is not None:
+        config.Config.BACKBONE_PRETRAINED = bool(args.backbone_pretrained)
+
     model = HybridDetector(img_size=args.img)
     # Keep config-driven architecture but set runtime class count for head
     if hasattr(model, "cls_head") and getattr(model.cls_head, "num_classes", None) != num_classes:
@@ -274,12 +280,26 @@ def cmd_train(args: argparse.Namespace) -> None:
         model.cls_head = ClassHead(num_classes=num_classes)
     model.to(device)
 
-    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    # Discriminative learning rates: backbone gets a smaller LR than heads.
+    backbone_lr_mult = float(getattr(args, "backbone_lr_mult", getattr(config.Config, "BACKBONE_LR_MULT", 0.1)))
+    backbone_lr_mult = max(0.0, min(1.0, backbone_lr_mult))
+
+    param_groups = []
+    if hasattr(model, "cnn"):
+        backbone_params = [p for p in model.cnn.parameters() if p.requires_grad]
+        other_params = [p for n, p in model.named_parameters() if (not n.startswith("cnn.")) and p.requires_grad]
+        if backbone_params:
+            param_groups.append({"params": backbone_params, "lr": args.lr * backbone_lr_mult})
+        if other_params:
+            param_groups.append({"params": other_params, "lr": args.lr})
+
+    optimizer = optim.AdamW(param_groups if param_groups else model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     steps_per_epoch = max(1, len(train_ds) // args.batch)
+    max_lr = [args.lr * backbone_lr_mult, args.lr] if param_groups else args.lr
     lr_scheduler = scheduler_mod.get_scheduler(
         optimizer,
-        max_lr=args.lr,
+        max_lr=max_lr,
         epochs=args.epochs,
         steps_per_epoch=steps_per_epoch,
     )
@@ -577,7 +597,25 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--batch", type=int, default=config.Config.BATCH_SIZE)
     t.add_argument("--img", type=int, default=config.Config.IMG_SIZE)
     t.add_argument("--device", type=str, default=config.Config.DEVICE)
+    t.add_argument(
+        "--backbone",
+        type=str,
+        default=str(getattr(config.Config, "BACKBONE", "resnet50")),
+        help="Backbone name (e.g. resnet50, resnet101, convnext_tiny).",
+    )
+    t.add_argument(
+        "--backbone-pretrained",
+        action=argparse.BooleanOptionalAction,
+        default=bool(getattr(config.Config, "BACKBONE_PRETRAINED", True)),
+        help="Enable/disable pretrained backbone weights.",
+    )
     t.add_argument("--lr", type=float, default=config.Config.LR)
+    t.add_argument(
+        "--backbone-lr-mult",
+        type=float,
+        default=float(getattr(config.Config, "BACKBONE_LR_MULT", 0.1)),
+        help="Backbone LR multiplier relative to --lr (0..1).",
+    )
     t.add_argument("--weight-decay", type=float, default=config.Config.WEIGHT_DECAY)
     t.add_argument(
         "--amp",

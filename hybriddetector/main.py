@@ -7,6 +7,7 @@ from pathlib import Path
 
 from hybriddetector.backbone import cnn_backbone, transformer, fusion
 from hybriddetector.backbone.resnet_backbone import ResNetBackbone
+from hybriddetector.backbone.convnext_backbone import ConvNeXtBackbone
 from hybriddetector.heads import box_head, class_head, objectness_head
 from hybriddetector.dataset import custom_dataset, transforms
 from hybriddetector.trainer import train, scheduler, evaluate
@@ -35,22 +36,30 @@ class HybridDetector(torch.nn.Module):
         backbone_pretrained = bool(getattr(config.Config, "BACKBONE_PRETRAINED", True))
         if backbone_name.startswith("resnet"):
             self.cnn = ResNetBackbone(name=backbone_name, pretrained=backbone_pretrained)
+        elif backbone_name.startswith("convnext"):
+            self.cnn = ConvNeXtBackbone(name=backbone_name, pretrained=backbone_pretrained)
         else:
             self.cnn = cnn_backbone.CNNBackbone()
+
+        # Prefer backbone-provided metadata; fall back to Config for legacy backbones.
+        backbone_channels = list(getattr(self.cnn, "out_channels", getattr(config.Config, "BACKBONE_CHANNELS", [64, 256, 512])))
+        backbone_strides = list(getattr(self.cnn, "strides", getattr(config.Config, "BACKBONE_STRIDES", [4, 8, 16])))
+        if len(backbone_channels) != 3:
+            backbone_channels = list(getattr(config.Config, "BACKBONE_CHANNELS", [64, 256, 512]))
+        if len(backbone_strides) != 3:
+            backbone_strides = list(getattr(config.Config, "BACKBONE_STRIDES", [4, 8, 16]))
 
         # Transformer (speed-optimized): by default apply only on low-res feature map
         self.use_low_res_transformer_only = bool(getattr(config.Config, "TRANSFORMER_LOW_RES_ONLY", True))
         token_pool_factor = int(getattr(config.Config, "TOKEN_POOL_FACTOR", 1))
 
-        strides = list(getattr(config.Config, "BACKBONE_STRIDES", [4, 8, 16]))
-        if len(strides) != 3:
-            strides = [4, 8, 16]
+        strides = backbone_strides
 
         if self.use_low_res_transformer_only:
             low_h = max(1, self.img_size // int(strides[2]))
             low_w = max(1, self.img_size // int(strides[2]))
             self.low_res_transformer = transformer.TransformerBlock(
-                config.Config.BACKBONE_CHANNELS[2],
+                backbone_channels[2],
                 low_h,
                 low_w,
                 num_heads=config.Config.TRANSFORMER_HEADS,
@@ -69,13 +78,13 @@ class HybridDetector(torch.nn.Module):
                     num_heads=config.Config.TRANSFORMER_HEADS,
                     token_pool_factor=token_pool_factor,
                 )
-                for ch, h, w in zip(config.Config.BACKBONE_CHANNELS, heights, widths)
+                for ch, h, w in zip(backbone_channels, heights, widths)
             ])
         # Fusion
         self.fusion = fusion.FeatureFusion(
-            channels_high=config.Config.BACKBONE_CHANNELS[0],
-            channels_med=config.Config.BACKBONE_CHANNELS[1],
-            channels_low=config.Config.BACKBONE_CHANNELS[2],
+            channels_high=backbone_channels[0],
+            channels_med=backbone_channels[1],
+            channels_low=backbone_channels[2],
             out_channels=256
         )
         # Heads

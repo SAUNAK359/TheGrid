@@ -9,7 +9,8 @@ class Config:
     IMG_SIZE = 640
     # Keep default training quick; override via CLI --epochs for longer runs.
     EPOCHS = 5
-    LR = 1e-3
+    # Slightly lower default LR is friendlier for pretrained backbones.
+    LR = 5e-4
     WEIGHT_DECAY = 1e-4
     USE_AMP = True  # Mixed precision training (faster on modern GPUs)
     GRAD_ACCUM_STEPS = 1  # Increase if VRAM-limited (effective batch = BATCH_SIZE * GRAD_ACCUM_STEPS)
@@ -21,15 +22,18 @@ class Config:
     PREFETCH_FACTOR = 2
 
     # Speed/compute knobs
-    FREEZE_CNN_EPOCHS = 0  # Freeze CNN backbone for first N epochs
+    # Freeze the pretrained CNN for the first epoch so heads/fusion adapt quickly.
+    FREEZE_CNN_EPOCHS = 1  # Freeze CNN backbone for first N epochs
     TRANSFORMER_LOW_RES_ONLY = True  # Apply transformer only on low-res (40x40) feature map
     TOKEN_POOL_FACTOR = 2  # AvgPool factor inside MHSA (reduces tokens by factor^2)
 
     # Model Architecture
     NUM_CLASSES = 20
-    # Backbone: default to a pretrained ResNet for competitive performance.
-    BACKBONE = 'resnet50'
+    # Backbone: default to a strong pretrained backbone for good few-epoch performance.
+    BACKBONE = 'convnext_tiny'
     BACKBONE_PRETRAINED = True
+    # Use a smaller LR for the backbone than the heads (discriminative LR).
+    BACKBONE_LR_MULT = 0.1
     # Feature channels returned by the backbone (high/med/low): [P3, P4, P5] for ResNet.
     BACKBONE_CHANNELS = [512, 1024, 2048]
     # Spatial strides (relative to input image) for the three backbone outputs.
