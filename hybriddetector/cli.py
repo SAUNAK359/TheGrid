@@ -217,12 +217,54 @@ def cmd_train(args: argparse.Namespace) -> None:
     num_classes = len(class_names) if class_names else config.Config.NUM_CLASSES
 
     train_tf = hd_transforms.get_transforms(train=True, img_size=args.img)
-    train_ds = custom_dataset.CustomDataset(csv_file=str(train_labels), img_dir=str(train_images), transform=train_tf)
+    train_ds = custom_dataset.CustomDataset(
+        csv_file=str(train_labels),
+        img_dir=str(train_images),
+        transform=train_tf,
+        num_classes=num_classes,
+    )
 
     val_ds = None
     if val_images and val_labels and val_images.exists() and val_labels.exists():
         val_tf = hd_transforms.get_transforms(train=False, img_size=args.img)
-        val_ds = custom_dataset.CustomDataset(csv_file=str(val_labels), img_dir=str(val_images), transform=val_tf)
+        val_ds = custom_dataset.CustomDataset(
+            csv_file=str(val_labels),
+            img_dir=str(val_images),
+            transform=val_tf,
+            num_classes=num_classes,
+        )
+
+    if bool(getattr(args, "audit", True)):
+        try:
+            from hybriddetector.dataset.audit import audit_yolo_dataset, format_audit_summary
+
+            stats, examples = audit_yolo_dataset(
+                images_dir=train_images,
+                labels_dir=train_labels,
+                num_classes=num_classes,
+                max_print=int(getattr(args, "audit_max_print", 5)),
+            )
+            print(format_audit_summary("Train", stats, examples))
+            if bool(getattr(args, "audit_strict", False)):
+                if stats.images_missing_label_file > 0 or stats.bad_boxes > 0 or stats.label_out_of_range > 0:
+                    raise ValueError("Dataset audit failed (train). Fix labels/images or disable --audit-strict.")
+
+            if val_images and val_labels and val_images.exists() and val_labels.exists():
+                vstats, vex = audit_yolo_dataset(
+                    images_dir=val_images,
+                    labels_dir=val_labels,
+                    num_classes=num_classes,
+                    max_print=int(getattr(args, "audit_max_print", 5)),
+                )
+                print(format_audit_summary("Val", vstats, vex))
+                if bool(getattr(args, "audit_strict", False)):
+                    if vstats.images_missing_label_file > 0 or vstats.bad_boxes > 0 or vstats.label_out_of_range > 0:
+                        raise ValueError("Dataset audit failed (val). Fix labels/images or disable --audit-strict.")
+        except Exception as e:
+            # Keep training runnable even if audit deps fail, unless strict mode requested.
+            if bool(getattr(args, "audit_strict", False)):
+                raise
+            print(f"Warning: dataset audit skipped/failed: {e}")
 
     model = HybridDetector()
     # Keep config-driven architecture but set runtime class count for head
@@ -476,6 +518,24 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--project", type=str, default=str(config.Config.SAVE_DIR))
     t.add_argument("--save-period", type=int, default=int(getattr(config.Config, "SAVE_EVERY_N_EPOCHS", 5)))
     t.add_argument("--resume", type=str, default="", help="Path to checkpoint .pth to resume")
+
+    t.add_argument(
+        "--audit",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Run a fast dataset/label sanity audit before training.",
+    )
+    t.add_argument(
+        "--audit-strict",
+        action="store_true",
+        help="Fail training if audit finds missing labels / invalid boxes / out-of-range class ids.",
+    )
+    t.add_argument(
+        "--audit-max-print",
+        type=int,
+        default=5,
+        help="Max number of audit example issues to print per split.",
+    )
 
     t.add_argument(
         "--val-every",

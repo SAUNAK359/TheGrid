@@ -19,9 +19,10 @@ class CustomDataset(Dataset):
        Each line: class_id x_center y_center width height (all normalized 0-1)
     2) CSV annotation (legacy): ['image_path', 'x_center','y_center','w','h','class_id']
     """
-    def __init__(self, csv_file, img_dir, transform=None):
+    def __init__(self, csv_file, img_dir, transform=None, num_classes: int | None = None):
         self.img_dir = str(img_dir)
         self.transform = transform or get_transforms()
+        self.num_classes = num_classes
 
         # Backward-compatible parameter name: csv_file may actually be a YOLO labels directory.
         labels_or_csv = Path(csv_file)
@@ -99,6 +100,59 @@ class CustomDataset(Dataset):
 
         return torch.tensor(boxes, dtype=torch.float32), torch.tensor(labels, dtype=torch.long)
 
+    @staticmethod
+    def _sanitize_yolo_boxes(
+        boxes: torch.Tensor,
+        labels: torch.Tensor,
+        *,
+        eps: float = 1e-9,
+        clip: bool = True,
+        num_classes: int | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Remove/clip invalid YOLO-format boxes (xc, yc, w, h) normalized to [0, 1].
+
+        Albumentations will raise if a box becomes degenerate during conversion
+        (e.g., w==0 or h==0 -> x_max <= x_min).
+        """
+        if boxes.numel() == 0:
+            return boxes.reshape(0, 4).to(dtype=torch.float32), labels.reshape(0).to(dtype=torch.long)
+
+        boxes = boxes.to(dtype=torch.float32)
+        labels = labels.to(dtype=torch.long)
+
+        if boxes.ndim != 2 or boxes.shape[-1] != 4:
+            raise ValueError(f"Expected boxes to have shape [N,4] (YOLO), got {tuple(boxes.shape)}")
+        if labels.ndim != 1 or labels.shape[0] != boxes.shape[0]:
+            raise ValueError(
+                f"Expected labels to have shape [N] matching boxes, got labels={tuple(labels.shape)} boxes={tuple(boxes.shape)}"
+            )
+
+        finite = torch.isfinite(boxes).all(dim=1)
+        w = boxes[:, 2]
+        h = boxes[:, 3]
+        positive = (w > eps) & (h > eps)
+        keep = finite & positive
+        if num_classes is not None:
+            keep = keep & (labels >= 0) & (labels < int(num_classes))
+
+        boxes = boxes[keep]
+        labels = labels[keep]
+
+        if boxes.numel() == 0:
+            return boxes.reshape(0, 4), labels.reshape(0)
+
+        if clip:
+            boxes = boxes.clamp_(0.0, 1.0)
+
+        # Re-check after clipping (a bad label might clip to 0 width/height).
+        w2 = boxes[:, 2]
+        h2 = boxes[:, 3]
+        keep2 = (w2 > eps) & (h2 > eps) & torch.isfinite(boxes).all(dim=1)
+        boxes = boxes[keep2]
+        labels = labels[keep2]
+
+        return boxes.reshape(-1, 4), labels.reshape(-1)
+
     def __len__(self):
         return len(self.image_list)
 
@@ -118,6 +172,10 @@ class CustomDataset(Dataset):
             boxes = torch.tensor(boxes, dtype=torch.float32)
             labels = torch.tensor(labels, dtype=torch.long)
 
+        # Prevent Albumentations from crashing on degenerate/invalid boxes (YOLO mode only).
+        if self.mode == "yolo":
+            boxes, labels = self._sanitize_yolo_boxes(boxes, labels, num_classes=self.num_classes)
+
         target = {'boxes': boxes, 'labels': labels}
 
         if self.transform:
@@ -125,7 +183,18 @@ class CustomDataset(Dataset):
             bboxes_in = boxes.tolist() if isinstance(boxes, torch.Tensor) else boxes.tolist()
             labels_in = labels.tolist() if isinstance(labels, torch.Tensor) else labels.tolist()
 
-            transformed = self.transform(image=image, bboxes=bboxes_in, class_labels=labels_in)
+            try:
+                transformed = self.transform(image=image, bboxes=bboxes_in, class_labels=labels_in)
+            except ValueError as e:
+                # Common cause: dataset contains a YOLO line with w==0 or h==0 (or NaNs),
+                # which becomes x_max<=x_min during conversion.
+                # Fall back to transforming the image without boxes so training/eval can continue.
+                print(
+                    f"[CustomDataset] Albumentations bbox error for image '{img_path}': {e}. "
+                    "Dropping bboxes for this sample."
+                )
+                transformed = self.transform(image=image, bboxes=[], class_labels=[])
+
             image = transformed['image']
             bboxes_out = transformed.get('bboxes', [])
             labels_out = transformed.get('class_labels', [])

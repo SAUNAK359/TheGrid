@@ -10,3 +10,4 @@ tqdm
 albumentations
 pyyaml
 pandas
+pytest
