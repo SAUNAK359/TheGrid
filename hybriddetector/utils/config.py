@@ -30,15 +30,19 @@ class Config:
     # Backbone: default to a pretrained ResNet for competitive performance.
     BACKBONE = 'resnet50'
     BACKBONE_PRETRAINED = True
-    # Feature channels returned by the backbone (high/med/low): [C2, C3, C4] for ResNet.
-    BACKBONE_CHANNELS = [256, 512, 1024]
+    # Feature channels returned by the backbone (high/med/low): [P3, P4, P5] for ResNet.
+    BACKBONE_CHANNELS = [512, 1024, 2048]
     # Spatial strides (relative to input image) for the three backbone outputs.
-    BACKBONE_STRIDES = [4, 8, 16]
+    BACKBONE_STRIDES = [8, 16, 32]
     TRANSFORMER_HEADS = 8
 
     # Anchor priors (normalized w,h in [0,1]) for 3 anchors.
-    # These are general-purpose; for best results, tune per-dataset.
-    ANCHORS = [(0.04, 0.06), (0.10, 0.14), (0.20, 0.28)]
+    # General-purpose starting point for P3/P4/P5; tune per-dataset for best results.
+    ANCHORS = [(0.03, 0.04), (0.08, 0.10), (0.18, 0.22)]
+
+    # Exponential Moving Average (EMA) of weights (improves final mAP stability)
+    USE_EMA = True
+    EMA_DECAY = 0.9998
 
     # Detection Thresholds
     CONF_THRESH = 0.3

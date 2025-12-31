@@ -9,12 +9,11 @@ class ResNetBackbone(nn.Module):
     """ResNet backbone that returns 3 feature maps for the detector.
 
     For an input image of size 640x640, the returned feature map strides are:
-      - f_high: stride 4  (approx 160x160)
-      - f_med:  stride 8  (approx 80x80)
-      - f_low:  stride 16 (approx 40x40)
+            - f_high: stride 8  (approx 80x80)   (P3)
+            - f_med:  stride 16 (approx 40x40)  (P4)
+            - f_low:  stride 32 (approx 20x20)  (P5)
 
-    This matches the detector's expectation that the *medium* map is 80x80
-    for 640-sized inputs (used by heads).
+        This is closer to modern YOLO defaults (multi-scale detection on P3/P4/P5).
     """
 
     def __init__(self, name: str = "resnet50", pretrained: bool = True):
@@ -47,8 +46,7 @@ class ResNetBackbone(nn.Module):
         self.layer1 = resnet.layer1  # stride 4
         self.layer2 = resnet.layer2  # stride 8
         self.layer3 = resnet.layer3  # stride 16
-
-        # Drop layer4 to keep 3 levels (and keep 40x40 as low-res)
+        self.layer4 = resnet.layer4  # stride 32
 
     def forward(self, x: torch.Tensor):
         x = self.conv1(x)
@@ -56,7 +54,8 @@ class ResNetBackbone(nn.Module):
         x = self.relu(x)
         x = self.maxpool(x)
 
-        f_high = self.layer1(x)
-        f_med = self.layer2(f_high)
-        f_low = self.layer3(f_med)
+        x = self.layer1(x)
+        f_high = self.layer2(x)       # P3
+        f_med = self.layer3(f_high)   # P4
+        f_low = self.layer4(f_med)    # P5
         return f_high, f_med, f_low

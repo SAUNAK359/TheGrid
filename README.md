@@ -37,6 +37,7 @@ A practical object detection framework combining Convolutional Neural Networks (
 - Multi-worker data loading
 - Efficient batch processing
 - CUDA acceleration support
+- EMA weights for more stable final mAP (optional)
 
 📊 **Complete Evaluation Suite**
 - mAP@0.5 calculation (COCO-style)
@@ -169,15 +170,18 @@ hybriddetector/
 ## 📊 Model Pipeline
 
 1. **Input**: RGB images (640×640)
-2. **Feature Extraction**: CNN backbone produces 3 feature maps at different scales
+2. **Feature Extraction**: CNN backbone produces 3 feature maps at different scales (P3/P4/P5)
 3. **Attention Enhancement**: Transformer blocks process each feature map
 4. **Feature Fusion**: Multi-scale features are fused into unified representation
-5. **Detection**: Three parallel heads predict:
+5. **Detection (Multi-Scale Heads)**: Heads run on all three levels and predictions are concatenated:
    - Bounding boxes (coordinates)
    - Objectness scores (presence of objects)
    - Class probabilities (20 classes)
 6. **Post-processing**: NMS filters overlapping detections
 7. **Output**: Final detections with boxes, scores, and class labels
+
+Notes:
+- If EMA is enabled in [hybriddetector/utils/config.py](hybriddetector/utils/config.py), the checkpoint saved as `best_model.pth` uses EMA weights for better final stability.
 
 ## 🔧 Installation
 

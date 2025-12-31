@@ -91,13 +91,34 @@ class HybridDetector(torch.nn.Module):
             f1 = self.transformers[0](f1)
             f2 = self.transformers[1](f2)
             f3 = self.transformers[2](f3)
-        # FeatureFusion returns (high, medium, low). Use medium (80x80 for 640 input)
-        # as the detection feature map so head tensor shapes are consistent.
-        _, fused_med, _ = self.fusion(f1, f2, f3)
-        boxes = self.box_head(fused_med)
-        obj_scores = self.obj_head(fused_med)
-        class_probs = self.cls_head(fused_med)
-        return {'boxes': boxes, 'objectness': obj_scores, 'class_probs': class_probs}
+        # FeatureFusion returns (high, medium, low) corresponding to P3/P4/P5.
+        fused_high, fused_med, fused_low = self.fusion(f1, f2, f3)
+
+        # Multi-scale heads (concatenate predictions across levels).
+        boxes_h = self.box_head(fused_high)
+        boxes_m = self.box_head(fused_med)
+        boxes_l = self.box_head(fused_low)
+        boxes = torch.cat([boxes_h, boxes_m, boxes_l], dim=1)
+
+        obj_h = self.obj_head(fused_high)
+        obj_m = self.obj_head(fused_med)
+        obj_l = self.obj_head(fused_low)
+        obj_scores = torch.cat([obj_h, obj_m, obj_l], dim=1)
+
+        cls_h = self.cls_head(fused_high)
+        cls_m = self.cls_head(fused_med)
+        cls_l = self.cls_head(fused_low)
+        class_probs = torch.cat([cls_h, cls_m, cls_l], dim=1)
+
+        meta = {
+            "levels": [
+                {"h": int(fused_high.shape[-2]), "w": int(fused_high.shape[-1])},
+                {"h": int(fused_med.shape[-2]), "w": int(fused_med.shape[-1])},
+                {"h": int(fused_low.shape[-2]), "w": int(fused_low.shape[-1])},
+            ]
+        }
+
+        return {'boxes': boxes, 'objectness': obj_scores, 'class_probs': class_probs, 'meta': meta}
 
 
 __all__ = ["HybridDetector"]

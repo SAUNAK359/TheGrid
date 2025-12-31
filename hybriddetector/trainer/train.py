@@ -10,6 +10,52 @@ import json
 from ..losses import bbox_loss, cls_loss, obj_loss
 
 
+class ModelEMA:
+    """Exponential Moving Average (EMA) of model weights.
+
+    Stores a shadow copy of state_dict and updates it after optimizer steps.
+    """
+
+    def __init__(self, model: torch.nn.Module, decay: float = 0.9998):
+        self.decay = float(decay)
+        self.shadow = {}
+        self._init_from(model)
+
+    @torch.no_grad()
+    def _init_from(self, model: torch.nn.Module) -> None:
+        self.shadow = {}
+        for k, v in model.state_dict().items():
+            if torch.is_floating_point(v):
+                self.shadow[k] = v.detach().float().clone()
+            else:
+                self.shadow[k] = v.detach().clone()
+
+    @torch.no_grad()
+    def update(self, model: torch.nn.Module) -> None:
+        d = self.decay
+        for k, v in model.state_dict().items():
+            if k not in self.shadow:
+                if torch.is_floating_point(v):
+                    self.shadow[k] = v.detach().float().clone()
+                else:
+                    self.shadow[k] = v.detach().clone()
+                continue
+
+            if torch.is_floating_point(v):
+                self.shadow[k].mul_(d).add_(v.detach().float(), alpha=(1.0 - d))
+            else:
+                # For non-floating buffers, keep latest.
+                self.shadow[k].copy_(v.detach())
+
+    def state_dict(self) -> dict:
+        return self.shadow
+
+    def load_state_dict(self, state: dict) -> None:
+        if not isinstance(state, dict):
+            raise TypeError(f"EMA state must be a dict, got: {type(state)!r}")
+        self.shadow = state
+
+
 class Trainer:
     """
     Enhanced Trainer for Hybrid Detector with checkpointing, mixed precision, and logging.
@@ -67,6 +113,20 @@ class Trainer:
         self.current_epoch = 0
         self.best_loss = float('inf')
 
+        # EMA (best-effort; controlled by Config.USE_EMA)
+        self.use_ema = False
+        self.ema = None
+        try:
+            from ..utils.config import Config
+
+            self.use_ema = bool(getattr(Config, "USE_EMA", False)) and str(device).startswith('cuda')
+            ema_decay = float(getattr(Config, "EMA_DECAY", 0.9998))
+            if self.use_ema:
+                self.ema = ModelEMA(self.model, decay=ema_decay)
+        except Exception:
+            self.use_ema = False
+            self.ema = None
+
     @staticmethod
     def collate_fn(batch):
         images, targets = zip(*batch)
@@ -119,6 +179,9 @@ class Trainer:
                     self.scaler.update()
                 else:
                     self.optimizer.step()
+
+                if self.use_ema and self.ema is not None:
+                    self.ema.update(self.model)
 
                 self.optimizer.zero_grad(set_to_none=True)
 
@@ -237,7 +300,11 @@ class Trainer:
         pred_obj = outputs['objectness']
         pred_cls = outputs['class_probs']
 
-        target_boxes, target_labels, target_obj = self._encode_dense_targets(pred_boxes, targets)
+        target_boxes, target_labels, target_obj = self._encode_dense_targets(
+            pred_boxes,
+            targets,
+            meta=outputs.get('meta'),
+        )
 
         loss_obj = self.obj_loss_fn(pred_obj, target_obj)
         loss_cls = self.cls_loss_fn(pred_cls, target_labels)
@@ -250,7 +317,12 @@ class Trainer:
 
         return loss_bbox, loss_cls, loss_obj
 
-    def _encode_dense_targets(self, pred_boxes: torch.Tensor, targets: list[dict]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _encode_dense_targets(
+        self,
+        pred_boxes: torch.Tensor,
+        targets: list[dict],
+        meta: dict | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Encode YOLO-format GT boxes into dense anchor targets aligned with model outputs.
 
         pred_boxes: [B, N, 4] where N=H*W*A and boxes are predicted in (xc,yc,w,h) normalized space.
@@ -286,16 +358,52 @@ class Trainer:
         if N % num_anchors != 0:
             raise ValueError(f"Pred count N={N} not divisible by num_anchors={num_anchors}")
 
-        grid_cells = N // num_anchors
-        grid_size = int(grid_cells ** 0.5)
-        if grid_size * grid_size != grid_cells:
-            raise ValueError(f"Expected square grid; got grid_cells={grid_cells} from N={N} and A={num_anchors}")
+        # Multi-scale: if model provides per-level shapes, compute offsets into the concatenated tensor.
+        # Expected concat order matches model forward: [P3, P4, P5].
+        levels = None
+        if isinstance(meta, dict):
+            lv = meta.get("levels")
+            if isinstance(lv, list) and len(lv) == 3:
+                ok = True
+                parsed = []
+                for item in lv:
+                    if not isinstance(item, dict) or "h" not in item or "w" not in item:
+                        ok = False
+                        break
+                    h = int(item["h"])  # type: ignore[arg-type]
+                    w = int(item["w"])  # type: ignore[arg-type]
+                    if h <= 0 or w <= 0:
+                        ok = False
+                        break
+                    parsed.append((h, w))
+                if ok:
+                    levels = parsed
 
-        H = W = grid_size
+        if levels is None:
+            # Backward-compatible single-scale path (assume square grid)
+            grid_cells = N // num_anchors
+            grid_size = int(grid_cells ** 0.5)
+            if grid_size * grid_size != grid_cells:
+                raise ValueError(
+                    f"Expected square grid; got grid_cells={grid_cells} from N={N} and A={num_anchors}"
+                )
+            levels = [(grid_size, grid_size)]
+
+        level_sizes = [h * w * num_anchors for (h, w) in levels]
+        if sum(level_sizes) != N:
+            raise ValueError(
+                f"Meta levels imply N={sum(level_sizes)} but model outputs N={N}. "
+                f"levels={levels}, A={num_anchors}"
+            )
+
+        level_offsets = [0]
+        for s in level_sizes[:-1]:
+            level_offsets.append(level_offsets[-1] + s)
 
         target_boxes = torch.zeros((B, N, 4), dtype=torch.float32, device=device)
         target_labels = torch.full((B, N), -1, dtype=torch.long, device=device)
         target_obj = torch.zeros((B, N, 1), dtype=torch.float32, device=device)
+        best_match = torch.full((B, N), -1.0, dtype=torch.float32, device=device)
 
         for bi in range(B):
             gt_boxes = targets[bi]["boxes"]
@@ -320,20 +428,39 @@ class Trainer:
                 bw = bw.clamp(0.0, 1.0)
                 bh = bh.clamp(0.0, 1.0)
 
-                gi = int((xc * W).clamp(0, W - 1).item())
-                gj = int((yc * H).clamp(0, H - 1).item())
-
                 # Select best anchor by IoU in (w,h) space (boxes assumed centered).
                 gt_wh = torch.stack([bw, bh])  # [2]
                 inter = torch.min(anchors_wh[:, 0], gt_wh[0]) * torch.min(anchors_wh[:, 1], gt_wh[1])
                 union = anchors_wh[:, 0] * anchors_wh[:, 1] + gt_wh[0] * gt_wh[1] - inter + 1e-9
                 iou_wh = inter / union
                 a = int(torch.argmax(iou_wh).item())
-                idx = (gj * W + gi) * num_anchors + a
+                match_score = float(iou_wh[a].item())
 
-                target_boxes[bi, idx] = torch.stack([xc, yc, bw, bh])
-                target_labels[bi, idx] = cls
-                target_obj[bi, idx, 0] = 1.0
+                # Choose best pyramid level by how well the object fits the grid resolution.
+                # Heuristic: object should cover ~4 cells at the selected level.
+                best_level = 0
+                best_level_score = None
+                for li, (h, w) in enumerate(levels):
+                    cells_w = float((bw * w).item())
+                    cells_h = float((bh * h).item())
+                    size = max(cells_w, cells_h)
+                    level_score = -abs(torch.log(torch.tensor(size + 1e-6)) - torch.log(torch.tensor(4.0)))
+                    level_score = float(level_score.item())
+                    if best_level_score is None or level_score > best_level_score:
+                        best_level_score = level_score
+                        best_level = li
+
+                H_l, W_l = levels[best_level]
+                gi = int((xc * W_l).clamp(0, W_l - 1).item())
+                gj = int((yc * H_l).clamp(0, H_l - 1).item())
+
+                idx = level_offsets[best_level] + (gj * W_l + gi) * num_anchors + a
+
+                if match_score > float(best_match[bi, idx].item()):
+                    best_match[bi, idx] = match_score
+                    target_boxes[bi, idx] = torch.stack([xc, yc, bw, bh])
+                    target_labels[bi, idx] = cls
+                    target_obj[bi, idx, 0] = 1.0
 
         return target_boxes, target_labels, target_obj
     
@@ -346,12 +473,17 @@ class Trainer:
             is_best: Whether this is the best model so far
             additional_info: Additional information to save (dict)
         """
+        model_state = self.model.state_dict()
+        ema_state = self.ema.state_dict() if (self.use_ema and self.ema is not None) else None
+
         checkpoint = {
             'epoch': epoch,
-            'model_state_dict': self.model.state_dict(),
+            # Keep raw weights for resume; best_model.pth will use EMA weights if enabled.
+            'model_state_dict': model_state,
+            'ema_state_dict': ema_state,
             'optimizer_state_dict': self.optimizer.state_dict(),
             'loss_history': self.loss_history,
-            'best_loss': self.best_loss
+            'best_loss': self.best_loss,
         }
         
         if self.scheduler:
@@ -371,7 +503,10 @@ class Trainer:
         # Save best model
         if is_best:
             best_path = self.checkpoint_dir / 'best_model.pth'
-            torch.save(checkpoint, best_path)
+            best_ckpt = dict(checkpoint)
+            if ema_state is not None:
+                best_ckpt['model_state_dict'] = ema_state
+            torch.save(best_ckpt, best_path)
             print(f"Best model saved: {best_path}")
         
         # Save latest checkpoint
@@ -394,6 +529,13 @@ class Trainer:
         
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+
+        if self.use_ema and self.ema is not None and 'ema_state_dict' in checkpoint and checkpoint['ema_state_dict'] is not None:
+            try:
+                self.ema.load_state_dict(checkpoint['ema_state_dict'])
+            except Exception:
+                # Best-effort; resume is still functional with raw weights.
+                pass
         
         if 'scheduler_state_dict' in checkpoint and self.scheduler:
             self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
