@@ -18,6 +18,7 @@ def decode_boxes_cxcywh(raw: torch.Tensor, eps_wh: float = 1e-6) -> torch.Tensor
     Uses tanh-based squashing for all 4 channels and ensures w/h are positive.
     """
     out = squash01_tanh(raw)
-    # Ensure strictly positive size to avoid degenerate boxes downstream.
-    out[..., 2:4] = out[..., 2:4].clamp(min=eps_wh, max=1.0)
-    return out
+    # Avoid in-place ops (important for AMP/autograd view tracking).
+    xy = out[..., 0:2]
+    wh = out[..., 2:4].clamp(min=eps_wh, max=1.0)
+    return torch.cat([xy, wh], dim=-1)
