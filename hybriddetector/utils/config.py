@@ -68,6 +68,8 @@ class Config:
     # Checkpointing
     SAVE_EVERY_N_EPOCHS = 5  # Save checkpoint every N epochs
     SAVE_BEST = True  # Save best model based on loss
+    # If True, only writes best_model.pth (no latest_checkpoint.pth, no per-epoch checkpoints).
+    SAVE_ONLY_BEST = True
     RESUME_TRAINING = False  # Resume from checkpoint
     RESUME_CHECKPOINT = './checkpoints/latest_checkpoint.pth'
     

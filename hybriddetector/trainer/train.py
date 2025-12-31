@@ -67,7 +67,8 @@ class Trainer:
                  pin_memory: bool = True,
                  persistent_workers: bool = True,
                  prefetch_factor: int = 2,
-                 freeze_cnn_epochs: int = 0):
+                 freeze_cnn_epochs: int = 0,
+                 save_only_best: bool | None = None):
         self.model = model.to(device)
         self.device = device
         self.optimizer = optimizer
@@ -112,6 +113,18 @@ class Trainer:
         
         self.current_epoch = 0
         self.best_loss = float('inf')
+
+        # Checkpoint saving policy
+        self.save_only_best = False
+        try:
+            from ..utils.config import Config
+
+            if save_only_best is None:
+                self.save_only_best = bool(getattr(Config, "SAVE_ONLY_BEST", False))
+            else:
+                self.save_only_best = bool(save_only_best)
+        except Exception:
+            self.save_only_best = bool(save_only_best) if save_only_best is not None else False
 
         # EMA (best-effort; controlled by Config.USE_EMA)
         self.use_ema = False
@@ -495,12 +508,14 @@ class Trainer:
         if additional_info:
             checkpoint.update(additional_info)
         
-        # Save regular checkpoint
-        checkpoint_path = self.checkpoint_dir / f'checkpoint_epoch_{epoch}.pth'
-        torch.save(checkpoint, checkpoint_path)
-        print(f"Checkpoint saved: {checkpoint_path}")
-        
-        # Save best model
+        # If configured to save only best, skip all non-best checkpoints.
+        if self.save_only_best and not is_best:
+            loss_history_path = self.checkpoint_dir / 'loss_history.json'
+            with open(loss_history_path, 'w') as f:
+                json.dump(self.loss_history, f, indent=2)
+            return
+
+        # Save best model (single file)
         if is_best:
             best_path = self.checkpoint_dir / 'best_model.pth'
             best_ckpt = dict(checkpoint)
@@ -508,11 +523,16 @@ class Trainer:
                 best_ckpt['model_state_dict'] = ema_state
             torch.save(best_ckpt, best_path)
             print(f"Best model saved: {best_path}")
-        
-        # Save latest checkpoint
-        latest_path = self.checkpoint_dir / 'latest_checkpoint.pth'
-        torch.save(checkpoint, latest_path)
-        
+
+        # Save regular/latest checkpoints only when not in save-only-best mode
+        if not self.save_only_best:
+            checkpoint_path = self.checkpoint_dir / f'checkpoint_epoch_{epoch}.pth'
+            torch.save(checkpoint, checkpoint_path)
+            print(f"Checkpoint saved: {checkpoint_path}")
+
+            latest_path = self.checkpoint_dir / 'latest_checkpoint.pth'
+            torch.save(checkpoint, latest_path)
+
         # Save loss history as JSON
         loss_history_path = self.checkpoint_dir / 'loss_history.json'
         with open(loss_history_path, 'w') as f:

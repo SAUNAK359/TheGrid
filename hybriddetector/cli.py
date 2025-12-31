@@ -319,6 +319,7 @@ def cmd_train(args: argparse.Namespace) -> None:
         persistent_workers=bool(args.persistent_workers),
         prefetch_factor=args.prefetch_factor,
         freeze_cnn_epochs=args.freeze_cnn_epochs,
+        save_only_best=bool(getattr(args, "save_only_best", False)),
     )
 
     start_epoch = 0
@@ -370,11 +371,17 @@ def cmd_train(args: argparse.Namespace) -> None:
         else:
             epochs_no_improve += 1
 
-        if (epoch + 1) % args.save_period == 0 or (epoch + 1) == args.epochs:
-            is_best = is_improved
-            if is_best:
+        if bool(getattr(args, "save_only_best", False)):
+            # Only write checkpoints when we improve.
+            if is_improved:
                 trainer.best_loss = metric
-            trainer.save_checkpoint(epoch + 1, is_best=is_best)
+                trainer.save_checkpoint(epoch + 1, is_best=True)
+        else:
+            if (epoch + 1) % args.save_period == 0 or (epoch + 1) == args.epochs:
+                is_best = is_improved
+                if is_best:
+                    trainer.best_loss = metric
+                trainer.save_checkpoint(epoch + 1, is_best=is_best)
 
         if args.early_stop and (epoch + 1) >= args.min_epochs and epochs_no_improve >= args.patience:
             print(
@@ -391,7 +398,10 @@ def cmd_train(args: argparse.Namespace) -> None:
     ckpt_dir = Path(args.project)
     best_weights = ckpt_dir / "best_model.pth"
     latest_weights = ckpt_dir / "latest_checkpoint.pth"
-    weights_to_use = best_weights if best_weights.exists() else latest_weights
+    if bool(getattr(args, "save_only_best", False)):
+        weights_to_use = best_weights
+    else:
+        weights_to_use = best_weights if best_weights.exists() else latest_weights
 
     if not weights_to_use.exists():
         print("Warning: no checkpoint found for post-train evaluation/visualization.")
@@ -639,6 +649,12 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--freeze-cnn-epochs", type=int, default=int(getattr(config.Config, "FREEZE_CNN_EPOCHS", 0)))
     t.add_argument("--project", type=str, default=str(config.Config.SAVE_DIR))
     t.add_argument("--save-period", type=int, default=int(getattr(config.Config, "SAVE_EVERY_N_EPOCHS", 5)))
+    t.add_argument(
+        "--save-only-best",
+        action=argparse.BooleanOptionalAction,
+        default=bool(getattr(config.Config, "SAVE_ONLY_BEST", False)),
+        help="Only save best_model.pth (no latest/per-epoch checkpoints).",
+    )
     t.add_argument("--resume", type=str, default="", help="Path to checkpoint .pth to resume")
 
     t.add_argument(
