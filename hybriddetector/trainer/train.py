@@ -219,7 +219,9 @@ class Trainer:
         return self._loss_from_outputs(outputs, targets)
 
     def _loss_from_outputs(self, outputs: dict, targets: list[dict]):
-        pred_boxes = outputs['boxes']
+        from ..utils.box_activation import decode_boxes_cxcywh
+
+        pred_boxes = decode_boxes_cxcywh(outputs['boxes'])
         pred_obj = outputs['objectness']
         pred_cls = outputs['class_probs']
 

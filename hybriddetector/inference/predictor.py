@@ -6,6 +6,7 @@ import csv
 from pathlib import Path
 from tqdm import tqdm
 from ..utils.nms import non_max_suppression
+from ..utils.box_activation import decode_boxes_cxcywh
 
 
 class Predictor:
@@ -37,8 +38,8 @@ class Predictor:
         outputs = self.model(images)
 
         # outputs: dict with keys ['boxes', 'objectness', 'class_probs']
-        # boxes are (xc,yc,w,h) in normalized space (post-sigmoid)
-        boxes_cxcywh = torch.sigmoid(outputs['boxes'])       # [B, N, 4]
+        # boxes are (xc,yc,w,h) in normalized space (decoded)
+        boxes_cxcywh = decode_boxes_cxcywh(outputs['boxes'])       # [B, N, 4]
         obj = torch.sigmoid(outputs['objectness']).squeeze(-1)  # [B, N]
         cls_prob = torch.softmax(outputs['class_probs'], dim=-1)  # [B, N, C]
 

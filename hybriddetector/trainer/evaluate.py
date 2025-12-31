@@ -4,6 +4,7 @@ import torch
 import numpy as np
 from hybriddetector.utils import metrics
 from pathlib import Path
+from hybriddetector.utils.box_activation import decode_boxes_cxcywh
 
 
 def calculate_iou(box1, box2):
@@ -90,7 +91,7 @@ def evaluate_model(model, dataloader, device, num_classes, save_dir='./results')
             outputs = model(images)
             
             # Decode predictions similarly to Predictor
-            boxes_cxcywh = torch.sigmoid(outputs['boxes'])  # [B,N,4]
+            boxes_cxcywh = decode_boxes_cxcywh(outputs['boxes'])  # [B,N,4]
             obj = torch.sigmoid(outputs['objectness']).squeeze(-1)  # [B,N]
             cls_prob = torch.softmax(outputs['class_probs'], dim=-1)  # [B,N,C]
             cls_conf, cls_label = torch.max(cls_prob, dim=-1)  # [B,N]
