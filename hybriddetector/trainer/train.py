@@ -88,7 +88,13 @@ class Trainer:
         cls_loss_total = 0
         obj_loss_total = 0
         
-        loop = tqdm(self.train_loader, desc=f"Epoch {self.current_epoch + 1}")
+        loop = tqdm(
+            self.train_loader,
+            desc=f"Epoch {self.current_epoch + 1}",
+            mininterval=2.0,
+            leave=False,
+            dynamic_ncols=True,
+        )
         
         self.optimizer.zero_grad(set_to_none=True)
 
@@ -182,7 +188,13 @@ class Trainer:
         cls_loss_total = 0.0
         obj_loss_total = 0.0
 
-        loop = tqdm(val_loader, desc=f"Val (epoch {self.current_epoch})")
+        loop = tqdm(
+            val_loader,
+            desc=f"Val (epoch {self.current_epoch})",
+            mininterval=2.0,
+            leave=False,
+            dynamic_ncols=True,
+        )
         for images, targets in loop:
             images = images.to(self.device)
             loss_bbox, loss_cls, loss_obj = self._forward_loss(images, targets)
@@ -257,6 +269,20 @@ class Trainer:
         if hasattr(self.model, "box_head") and hasattr(self.model.box_head, "num_anchors"):
             num_anchors = int(self.model.box_head.num_anchors)
 
+        # Anchor priors (normalized w,h). Best-effort: if missing/mismatched, fall back to uniform anchors.
+        anchors_wh = None
+        try:
+            from ..utils.config import Config
+
+            cfg_anchors = getattr(Config, "ANCHORS", None)
+            if isinstance(cfg_anchors, (list, tuple)) and len(cfg_anchors) == num_anchors:
+                anchors_wh = torch.tensor(cfg_anchors, device=device, dtype=torch.float32)  # [A,2]
+        except Exception:
+            anchors_wh = None
+
+        if anchors_wh is None:
+            anchors_wh = torch.full((num_anchors, 2), 0.10, device=device, dtype=torch.float32)
+
         if N % num_anchors != 0:
             raise ValueError(f"Pred count N={N} not divisible by num_anchors={num_anchors}")
 
@@ -297,7 +323,12 @@ class Trainer:
                 gi = int((xc * W).clamp(0, W - 1).item())
                 gj = int((yc * H).clamp(0, H - 1).item())
 
-                a = 0  # simplest: use first anchor
+                # Select best anchor by IoU in (w,h) space (boxes assumed centered).
+                gt_wh = torch.stack([bw, bh])  # [2]
+                inter = torch.min(anchors_wh[:, 0], gt_wh[0]) * torch.min(anchors_wh[:, 1], gt_wh[1])
+                union = anchors_wh[:, 0] * anchors_wh[:, 1] + gt_wh[0] * gt_wh[1] - inter + 1e-9
+                iou_wh = inter / union
+                a = int(torch.argmax(iou_wh).item())
                 idx = (gj * W + gi) * num_anchors + a
 
                 target_boxes[bi, idx] = torch.stack([xc, yc, bw, bh])

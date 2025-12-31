@@ -21,14 +21,24 @@ class Config:
     PREFETCH_FACTOR = 2
 
     # Speed/compute knobs
-    FREEZE_CNN_EPOCHS = 10  # Freeze CNN backbone for first N epochs
+    FREEZE_CNN_EPOCHS = 0  # Freeze CNN backbone for first N epochs
     TRANSFORMER_LOW_RES_ONLY = True  # Apply transformer only on low-res (40x40) feature map
     TOKEN_POOL_FACTOR = 2  # AvgPool factor inside MHSA (reduces tokens by factor^2)
 
     # Model Architecture
     NUM_CLASSES = 20
-    BACKBONE_CHANNELS = [64, 256, 512]
+    # Backbone: default to a pretrained ResNet for competitive performance.
+    BACKBONE = 'resnet50'
+    BACKBONE_PRETRAINED = True
+    # Feature channels returned by the backbone (high/med/low): [C2, C3, C4] for ResNet.
+    BACKBONE_CHANNELS = [256, 512, 1024]
+    # Spatial strides (relative to input image) for the three backbone outputs.
+    BACKBONE_STRIDES = [4, 8, 16]
     TRANSFORMER_HEADS = 8
+
+    # Anchor priors (normalized w,h in [0,1]) for 3 anchors.
+    # These are general-purpose; for best results, tune per-dataset.
+    ANCHORS = [(0.04, 0.06), (0.10, 0.14), (0.20, 0.28)]
 
     # Detection Thresholds
     CONF_THRESH = 0.3

@@ -62,7 +62,7 @@ def precision_recall(pred_boxes, pred_labels, pred_scores, target_boxes, target_
     return precision, recall
 
 
-def evaluate_model(model, dataloader, device, num_classes, save_dir='./results'):
+def evaluate_model(model, dataloader, device, num_classes, save_dir='./results', conf_thresh: float = 0.3):
     """
     Comprehensive model evaluation with mAP, confusion matrix, and PR curves.
     
@@ -111,7 +111,7 @@ def evaluate_model(model, dataloader, device, num_classes, save_dir='./results')
                 pred_labels = cls_label[img_idx].cpu().numpy()
 
                 # Apply confidence threshold
-                conf_mask = pred_scores > 0.3
+                conf_mask = pred_scores > float(conf_thresh)
                 pred_boxes = pred_boxes[conf_mask]
                 pred_scores = pred_scores[conf_mask]
                 pred_labels = pred_labels[conf_mask]

@@ -199,6 +199,17 @@ PublishScripts/
 # NuGet Symbol Packages
 *.snupkg
 
+# --- Python / ML project outputs ---
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Local datasets / artifacts
+Test_Data/
+checkpoints/
+results/
+_smoke_out/
+
 # --- Python / ML artifacts ---
 __pycache__/
 *.pyc

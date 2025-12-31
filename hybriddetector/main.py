@@ -4,7 +4,9 @@ import torch
 import torch.nn as nn
 from torch import optim
 from pathlib import Path
+
 from hybriddetector.backbone import cnn_backbone, transformer, fusion
+from hybriddetector.backbone.resnet_backbone import ResNetBackbone
 from hybriddetector.heads import box_head, class_head, objectness_head
 from hybriddetector.dataset import custom_dataset, transforms
 from hybriddetector.trainer import train, scheduler, evaluate
@@ -23,26 +25,42 @@ def _get_device():
     return device_type, device
 
 class HybridDetector(torch.nn.Module):
-    def __init__(self):
+    def __init__(self, img_size: int | None = None):
         super(HybridDetector, self).__init__()
+        if img_size is None:
+            img_size = int(getattr(config.Config, "IMG_SIZE", 640))
+        self.img_size = int(img_size)
         # Backbone
-        self.cnn = cnn_backbone.CNNBackbone()
+        backbone_name = str(getattr(config.Config, "BACKBONE", "resnet50")).lower().strip()
+        backbone_pretrained = bool(getattr(config.Config, "BACKBONE_PRETRAINED", True))
+        if backbone_name.startswith("resnet"):
+            self.cnn = ResNetBackbone(name=backbone_name, pretrained=backbone_pretrained)
+        else:
+            self.cnn = cnn_backbone.CNNBackbone()
 
         # Transformer (speed-optimized): by default apply only on low-res feature map
         self.use_low_res_transformer_only = bool(getattr(config.Config, "TRANSFORMER_LOW_RES_ONLY", True))
         token_pool_factor = int(getattr(config.Config, "TOKEN_POOL_FACTOR", 1))
 
+        strides = list(getattr(config.Config, "BACKBONE_STRIDES", [4, 8, 16]))
+        if len(strides) != 3:
+            strides = [4, 8, 16]
+
         if self.use_low_res_transformer_only:
+            low_h = max(1, self.img_size // int(strides[2]))
+            low_w = max(1, self.img_size // int(strides[2]))
             self.low_res_transformer = transformer.TransformerBlock(
                 config.Config.BACKBONE_CHANNELS[2],
-                40,
-                40,
+                low_h,
+                low_w,
                 num_heads=config.Config.TRANSFORMER_HEADS,
                 token_pool_factor=token_pool_factor,
             )
             self.transformers = None
         else:
             self.low_res_transformer = None
+            heights = [max(1, self.img_size // int(s)) for s in strides]
+            widths = [max(1, self.img_size // int(s)) for s in strides]
             self.transformers = nn.ModuleList([
                 transformer.TransformerBlock(
                     ch,
@@ -51,7 +69,7 @@ class HybridDetector(torch.nn.Module):
                     num_heads=config.Config.TRANSFORMER_HEADS,
                     token_pool_factor=token_pool_factor,
                 )
-                for ch, h, w in zip(config.Config.BACKBONE_CHANNELS, [320, 80, 40], [320, 80, 40])
+                for ch, h, w in zip(config.Config.BACKBONE_CHANNELS, heights, widths)
             ])
         # Fusion
         self.fusion = fusion.FeatureFusion(

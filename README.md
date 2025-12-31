@@ -61,7 +61,7 @@ A practical object detection framework combining Convolutional Neural Networks (
 ## 📋 Overview
 
 TheGrid implements a hybrid architecture that leverages the strengths of both CNNs and Vision Transformers:
-- **CNN Backbone**: Extracts multi-scale hierarchical features with strong local inductive biases
+- **Backbone (pretrained ResNet by default)**: Strong multi-scale features from ImageNet pretraining
 - **Transformer Layers**: Captures long-range dependencies and global context
 - **Feature Fusion**: Intelligently merges multi-scale features for robust detection
 - **Multi-Head Detection**: Separate heads for bounding box regression, objectness scoring, and classification
@@ -84,9 +84,9 @@ TheGrid implements a hybrid architecture that leverages the strengths of both CN
 - **tqdm**: Progress bars for training and inference
 
 ### Model Architecture Components
-- **CNN Backbone**: Multi-scale feature extraction with 3 feature pyramid levels
+- **Backbone**: Pretrained ResNet feature extractor (default: `resnet50`)
 - **Vision Transformer**: Self-attention mechanism with 8 attention heads
-- **Feature Fusion Module**: Multi-scale feature integration (64→256→512 channels)
+- **Feature Fusion Module**: FPN-style fusion across three scales
 - **Detection Heads**:
   - Box Head: Bounding box regression (x, y, w, h)
   - Class Head: 20-class object classification
@@ -97,7 +97,7 @@ TheGrid implements a hybrid architecture that leverages the strengths of both CN
 - **Learning Rate Scheduler**: Adaptive learning rate adjustment
 - **Mixed Precision (AMP)**: Automatic Mixed Precision for faster training
 - **Custom Loss Functions**:
-  - Bounding box loss (GIoU)
+    - Bounding box loss (CIoU-style, via `giou_loss` wrapper)
   - Classification loss (Focal Loss)
   - Objectness loss
 - **Data Augmentation**: Training-specific transformations
@@ -147,10 +147,11 @@ hybriddetector/
 ## 🚀 Key Features
 
 ### Architecture Highlights
-- **Multi-Scale Feature Extraction**: 3-level feature pyramid (64, 256, 512 channels)
+- **Competitive Backbone**: Pretrained ResNet (default) for much stronger representations
 - **Hybrid Attention**: Combines local CNN features with global transformer attention
 - **Efficient Fusion**: Adaptive feature fusion across different scales
-- **Modular Design**: Easily extendable and customizable components
+- **Stronger Heads**: Deeper Conv+BN+SiLU towers for box/obj/cls predictions
+- **Better Localization**: CIoU loss for box regression
 
 ### Training Configuration
 - **Image Size**: 640×640 pixels
@@ -206,6 +207,10 @@ Train (fast default):
 
 `python -m hybriddetector train --data /kaggle/working/data.yaml --epochs 5 --batch 8 --img 640 --device cuda`
 
+Example: train on the included Aquarium dataset (10 epochs):
+
+`python -m hybriddetector train --data /workspaces/TheGrid/Test_Data/aquarium_pretrain/data.yaml --epochs 10 --batch 8 --img 640 --device cuda`
+
 Train with early stopping (recommended when you have a validation split):
 
 `python -m hybriddetector train --data /kaggle/working/data.yaml --epochs 50 --early-stop --patience 5 --min-epochs 5 --val-every 1`
@@ -222,6 +227,11 @@ Notes:
 - Inference uses the same normalization as training.
 - Visualizations are saved as normal (non-black) RGB images with boxes drawn.
 - If you see no boxes, try lowering the threshold: `--conf 0.01`
+
+Model knobs (via `hybriddetector/utils/config.py`):
+- `BACKBONE`: default `resnet50` (also supports `resnet18`, `resnet34`, `resnet101`)
+- `BACKBONE_PRETRAINED`: load ImageNet weights (recommended)
+- `ANCHORS`: 3 anchor priors as normalized `(w, h)`
 
 Optional verification (consistency check):
 

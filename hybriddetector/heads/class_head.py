@@ -3,6 +3,8 @@
 import torch
 import torch.nn as nn
 
+from .blocks import ConvBNAct
+
 class ClassHead(nn.Module):
     """
     Predict class probabilities for each anchor.
@@ -12,10 +14,15 @@ class ClassHead(nn.Module):
         super(ClassHead, self).__init__()
         self.num_anchors = num_anchors
         self.num_classes = num_classes
+        self.stem = nn.Sequential(
+            ConvBNAct(in_channels, in_channels, kernel_size=3, act="silu"),
+            ConvBNAct(in_channels, in_channels, kernel_size=3, act="silu"),
+        )
         self.conv = nn.Conv2d(in_channels, num_anchors * num_classes, kernel_size=1)
 
     def forward(self, x):
         B, C, H, W = x.shape
+        x = self.stem(x)
         out = self.conv(x)                        # [B, num_anchors*num_classes, H, W]
         out = out.permute(0,2,3,1).contiguous()   # [B, H, W, num_anchors*num_classes]
         out = out.view(B, -1, self.num_classes)   # [B, H*W*num_anchors, num_classes]

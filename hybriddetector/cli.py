@@ -266,7 +266,7 @@ def cmd_train(args: argparse.Namespace) -> None:
                 raise
             print(f"Warning: dataset audit skipped/failed: {e}")
 
-    model = HybridDetector()
+    model = HybridDetector(img_size=args.img)
     # Keep config-driven architecture but set runtime class count for head
     if hasattr(model, "cls_head") and getattr(model.cls_head, "num_classes", None) != num_classes:
         from hybriddetector.heads.class_head import ClassHead
@@ -364,6 +364,90 @@ def cmd_train(args: argparse.Namespace) -> None:
             break
 
     print(f"\nDone. Checkpoints in: {Path(args.project).resolve()}")
+
+    # ---------------------------------------------------------------------
+    # Post-train: evaluation plots + sample visualizations
+    # ---------------------------------------------------------------------
+    ckpt_dir = Path(args.project)
+    best_weights = ckpt_dir / "best_model.pth"
+    latest_weights = ckpt_dir / "latest_checkpoint.pth"
+    weights_to_use = best_weights if best_weights.exists() else latest_weights
+
+    if not weights_to_use.exists():
+        print("Warning: no checkpoint found for post-train evaluation/visualization.")
+        return
+
+    if val_ds is None:
+        if bool(getattr(args, "eval_after", False)) or bool(getattr(args, "vis_after", False)):
+            print("Post-train eval/vis skipped: no validation split available.")
+        return
+
+    # Reload best weights for fair evaluation/visualizations.
+    load_weights(model, str(weights_to_use), device)
+
+    if bool(getattr(args, "eval_after", True)):
+        try:
+            from torch.utils.data import DataLoader
+            from hybriddetector.trainer.evaluate import evaluate_model
+
+            val_loader = DataLoader(
+                val_ds,
+                batch_size=int(getattr(args, "eval_batch", 4)),
+                shuffle=False,
+                collate_fn=trainer_mod.Trainer.collate_fn,
+                num_workers=int(args.workers),
+                pin_memory=bool(args.pin_memory),
+            )
+            eval_dir = ckpt_dir / "eval"
+            evaluate_model(
+                model=model,
+                dataloader=val_loader,
+                device=device,
+                num_classes=num_classes,
+                save_dir=str(eval_dir),
+                conf_thresh=float(getattr(args, "eval_conf", 0.3)),
+            )
+        except Exception as e:
+            print(f"Warning: post-train evaluation failed: {e}")
+
+    if bool(getattr(args, "vis_after", True)):
+        try:
+            import random
+
+            from hybriddetector.inference.predictor import Predictor
+            from hybriddetector.inference.visualize import save_detection_image
+
+            pred = Predictor(
+                model,
+                conf_thresh=float(getattr(args, "conf", float(config.Config.CONF_THRESH))),
+                iou_thresh=float(getattr(args, "iou", float(config.Config.IOU_THRESH))),
+                device=device,
+            )
+
+            vis_dir = ckpt_dir / "vis_samples"
+            vis_dir.mkdir(parents=True, exist_ok=True)
+
+            n = min(int(getattr(args, "vis_samples", 16)), len(val_ds))
+            idxs = list(range(len(val_ds)))
+            random.Random(42).shuffle(idxs)
+            idxs = idxs[:n]
+
+            for di in idxs:
+                img_t, _tgt = val_ds[di]
+                boxes, scores, labels = pred.predict_single_image(img_t)
+                out_path = vis_dir / f"val_{di:06d}_pred.jpg"
+                save_detection_image(
+                    img_t,
+                    boxes,
+                    labels,
+                    scores,
+                    class_names=class_names,
+                    save_path=out_path,
+                )
+
+            print(f"Saved sample visualizations to: {vis_dir.resolve()}")
+        except Exception as e:
+            print(f"Warning: post-train visualizations failed: {e}")
 
 
 def _iter_images(source: Path) -> List[Path]:
@@ -550,6 +634,35 @@ def build_parser() -> argparse.ArgumentParser:
     )
     t.add_argument("--patience", type=int, default=5, help="Early stopping patience (epochs).")
     t.add_argument("--min-epochs", type=int, default=5, help="Minimum epochs before early stopping can trigger.")
+
+    # Post-train outputs (enabled by default for Kaggle usability)
+    t.add_argument(
+        "--eval-after",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="After training, run evaluation on val and save PR curves/confusion matrix under <project>/eval.",
+    )
+    t.add_argument(
+        "--eval-batch",
+        type=int,
+        default=4,
+        help="Batch size used for post-train evaluation.",
+    )
+    t.add_argument(
+        "--eval-conf",
+        type=float,
+        default=0.3,
+        help="Confidence threshold for post-train evaluation.",
+    )
+    t.add_argument(
+        "--vis-after",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="After training, save a few predicted images under <project>/vis_samples.",
+    )
+    t.add_argument("--vis-samples", type=int, default=16, help="Number of val images to visualize.")
+    t.add_argument("--conf", type=float, default=float(config.Config.CONF_THRESH), help="Conf threshold for vis.")
+    t.add_argument("--iou", type=float, default=float(config.Config.IOU_THRESH), help="IoU threshold for NMS in vis.")
     t.set_defaults(func=cmd_train)
 
     pr = sub.add_parser("predict", help="Run inference on an image or folder")
