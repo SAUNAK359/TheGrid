@@ -17,12 +17,28 @@ class FocalLoss(nn.Module):
         logits: [B, N, num_classes]
         targets: [B, N] long tensor
         """
-        ce_loss = self.ce(logits.view(-1, logits.size(-1)), targets.view(-1))
+        # Compute CE for all anchors; ignored targets (-1) contribute 0.
+        flat_logits = logits.view(-1, logits.size(-1))
+        flat_targets = targets.view(-1)
+        ce_loss = self.ce(flat_logits, flat_targets)  # [B*N]
+
+        # Focal scaling (note: ignored anchors have ce_loss==0 -> focal term == 0).
         pt = torch.exp(-ce_loss)
-        loss = self.alpha * (1-pt)**self.gamma * ce_loss
-        if self.reduction=='mean':
-            return loss.mean()
-        elif self.reduction=='sum':
+        loss = self.alpha * (1 - pt) ** self.gamma * ce_loss
+
+        # IMPORTANT: do not average over all anchors (would be dominated by background/ignored).
+        # Normalize over valid (non-ignored) anchors so the classification head actually learns.
+        valid = flat_targets != -1
+        if valid.any():
+            loss = loss[valid]
+        else:
+            # No positives in this batch.
+            loss = loss.sum() * 0.0
+
+        if self.reduction == 'mean':
+            denom = max(1, int(loss.numel()))
+            return loss.sum() / float(denom)
+        if self.reduction == 'sum':
             return loss.sum()
         return loss
 

@@ -705,7 +705,7 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument(
         "--eval-conf",
         type=float,
-        default=0.3,
+        default=1e-3,
         help="Confidence threshold for post-train evaluation.",
     )
     t.add_argument(

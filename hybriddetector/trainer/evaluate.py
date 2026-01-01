@@ -5,6 +5,7 @@ import numpy as np
 from hybriddetector.utils import metrics
 from pathlib import Path
 from hybriddetector.utils.box_activation import decode_boxes_cxcywh
+from hybriddetector.utils.nms import non_max_suppression
 
 
 def calculate_iou(box1, box2):
@@ -62,7 +63,16 @@ def precision_recall(pred_boxes, pred_labels, pred_scores, target_boxes, target_
     return precision, recall
 
 
-def evaluate_model(model, dataloader, device, num_classes, save_dir='./results', conf_thresh: float = 0.3):
+def evaluate_model(
+    model,
+    dataloader,
+    device,
+    num_classes,
+    save_dir: str = './results',
+    conf_thresh: float = 1e-3,
+    iou_thresh: float = 0.5,
+    max_det: int = 300,
+):
     """
     Comprehensive model evaluation with mAP, confusion matrix, and PR curves.
     
@@ -106,15 +116,47 @@ def evaluate_model(model, dataloader, device, num_classes, save_dir='./results',
 
             # Process each image in the batch
             for img_idx in range(len(images)):
-                pred_boxes = boxes_xyxy[img_idx].cpu().numpy()
-                pred_scores = conf[img_idx].cpu().numpy()
-                pred_labels = cls_label[img_idx].cpu().numpy()
+                # Keep predictions in torch for NMS/top-k, then move to numpy.
+                pred_boxes_t = boxes_xyxy[img_idx]  # [N,4]
+                pred_scores_t = conf[img_idx]       # [N]
+                pred_labels_t = cls_label[img_idx]  # [N]
 
-                # Apply confidence threshold
-                conf_mask = pred_scores > float(conf_thresh)
-                pred_boxes = pred_boxes[conf_mask]
-                pred_scores = pred_scores[conf_mask]
-                pred_labels = pred_labels[conf_mask]
+                # NOTE: For mAP/AP you generally should not apply an aggressive fixed threshold
+                # before ranking-by-score. We keep a very small threshold by default only
+                # to reduce compute/memory.
+                thr = float(conf_thresh) if conf_thresh is not None else 0.0
+                if thr > 0.0:
+                    conf_mask = pred_scores_t > thr
+                    pred_boxes_t = pred_boxes_t[conf_mask]
+                    pred_scores_t = pred_scores_t[conf_mask]
+                    pred_labels_t = pred_labels_t[conf_mask]
+
+                # Class-aware NMS to cut duplicates without suppressing across classes.
+                if pred_boxes_t.numel() > 0:
+                    keep_all = []
+                    for c in pred_labels_t.unique():
+                        c = int(c.item())
+                        m = pred_labels_t == c
+                        keep = non_max_suppression(pred_boxes_t[m], pred_scores_t[m], float(iou_thresh))
+                        if keep.numel() > 0:
+                            # Map back to original indices.
+                            idxs = torch.nonzero(m, as_tuple=False).squeeze(1)
+                            keep_all.append(idxs[keep])
+
+                    if keep_all:
+                        keep_idx = torch.cat(keep_all, dim=0)
+                        # Optional top-k by score
+                        if max_det is not None and int(max_det) > 0 and keep_idx.numel() > int(max_det):
+                            topk = torch.topk(pred_scores_t[keep_idx], k=int(max_det)).indices
+                            keep_idx = keep_idx[topk]
+
+                        pred_boxes_t = pred_boxes_t[keep_idx]
+                        pred_scores_t = pred_scores_t[keep_idx]
+                        pred_labels_t = pred_labels_t[keep_idx]
+
+                pred_boxes = pred_boxes_t.detach().cpu().numpy()
+                pred_scores = pred_scores_t.detach().cpu().numpy()
+                pred_labels = pred_labels_t.detach().cpu().numpy()
                 
                 all_predictions.append({
                     'boxes': pred_boxes,
